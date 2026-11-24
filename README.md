@@ -4,7 +4,7 @@
 [`全新自主安全验证平台-核心能力实现规格.md`](./全新自主安全验证平台-核心能力实现规格.md)
 为产品事实来源，按 Phase 逐步实现。
 
-当前交付：**Phase 0 — 骨架与契约**。
+当前交付：**Phase 1 — 身份、任务与双图**。任务在 Phase 1 保存为草稿；执行引擎和模型路由按后续 Phase 交付。
 
 ## 本地启动
 
@@ -20,6 +20,14 @@ docker compose up --build
 curl http://localhost:8080/health/live
 curl http://localhost:8080/health/ready
 ```
+
+首次部署在交互终端初始化唯一的管理员：
+
+```bash
+docker compose exec app tianfa-server init-admin
+```
+
+输入邮箱和至少 12 字节的密码后，打开 `/login/` 登录。创建任务需要至少一个可验证目标及一条 Allow 授权范围。任务详情显示探索图血缘、资产锚点与覆盖；全局资产页可添加和关联资产，管理员可在用户页创建、停用和调整角色。停用用户会立即撤销现有会话。生产环境请在 HTTPS 反向代理后访问控制台；纯 HTTP 登录只允许本机回环地址。
 
 如果 `8080` 已被 Burp 等本地工具占用，可以只更改宿主机端口：
 
@@ -39,7 +47,9 @@ make dev-web
 后端默认监听 `:8080`，前端开发服务器监听 `:3000`，通过开发模式转发健康检查。
 后端使用其他地址时，设置 `TIANFA_DEV_API_ORIGIN`，例如
 `TIANFA_DEV_API_ORIGIN=http://127.0.0.1:18080 make dev-web`。
-未配置 PostgreSQL 时后端仍可存活，但 `/health/ready` 会返回未就绪。
+初始化管理员的源码开发命令是 `go run ./cmd/server init-admin`。未配置 PostgreSQL 时后端仍可存活，但 `/health/ready` 会返回未就绪。
+
+Phase 1 中点击“检查启动条件”会明确返回缺少模型路由。草稿的模型链在 [ADR-0002](docs/adr/0002-draft-without-llm-profile.md) 中说明；Phase 2 完成后再开放真实启动。
 
 ## 验证
 
@@ -48,10 +58,10 @@ make test
 make build
 ```
 
-OpenAPI 由 Go 路由常量和契约定义生成：`make openapi` 更新文档，
+OpenAPI 由 Go 契约定义生成：`make openapi` 更新文档，
 `make openapi-check` 检查文档与源码一致。PostgreSQL 迁移集成测试需要
 `TIANFA_TEST_DATABASE_URL`；CI 中默认运行。
 
 需求追踪和阶段计划见 [docs/requirements-traceability.md](docs/requirements-traceability.md)
-与 [docs/implementation-plan.md](docs/implementation-plan.md)。
+与 [docs/implementation-plan.md](docs/implementation-plan.md)。Phase 1 验收结果见 [docs/phase1-plan.md](docs/phase1-plan.md)。
 

@@ -1,21 +1,27 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/term"
 
 	"github.com/X9st/TianFaSRC/internal/api"
+	"github.com/X9st/TianFaSRC/internal/auth"
 	"github.com/X9st/TianFaSRC/internal/config"
 	"github.com/X9st/TianFaSRC/internal/store/postgres"
 	"github.com/X9st/TianFaSRC/internal/system"
+	"github.com/X9st/TianFaSRC/internal/task"
 )
 
 var version = "dev"
@@ -45,8 +51,34 @@ func main() {
 			os.Exit(1)
 		}
 		logger.Info("database migrations complete")
+		if len(os.Args) > 1 && os.Args[1] == "init-admin" {
+			if err := initAdmin(rootCtx, pool); err != nil {
+				logger.Error("initialize admin", "error", err)
+				os.Exit(1)
+			}
+			return
+		}
 	} else {
 		logger.Warn("database is not configured; readiness will remain unavailable")
+	}
+	if pool != nil {
+		go func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-rootCtx.Done():
+					return
+				case <-ticker.C:
+					ctx, cancel := context.WithTimeout(rootCtx, 5*time.Second)
+					_, err := (task.Store{Pool: pool}).ProjectActivities(ctx, 100)
+					cancel()
+					if err != nil && rootCtx.Err() == nil {
+						logger.Error("project activities", "error", err)
+					}
+				}
+			}
+		}()
 	}
 
 	server := &http.Server{
@@ -55,6 +87,7 @@ func main() {
 			Logger:    logger,
 			Version:   version,
 			Readiness: system.Readiness{Database: readinessDatabase(pool), DataDir: cfg.DataDir},
+			Pool:      pool,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
@@ -89,4 +122,28 @@ func readinessDatabase(pool *pgxpool.Pool) system.Database {
 		return nil
 	}
 	return pool
+}
+
+func initAdmin(ctx context.Context, pool *pgxpool.Pool) error {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return errors.New("init-admin requires an interactive terminal")
+	}
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Fprint(os.Stderr, "Admin email: ")
+	email, err := reader.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(os.Stderr, "Admin password: ")
+	password, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return err
+	}
+	user, err := (auth.Store{Pool: pool}).InitAdmin(ctx, strings.TrimSpace(email), string(password))
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stdout, "Initialized admin:", user.Email)
+	return nil
 }

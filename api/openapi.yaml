@@ -1,5 +1,214 @@
 components:
     schemas:
+        Activity:
+            properties:
+                event_id:
+                    format: uuid
+                    type: string
+                id:
+                    format: uuid
+                    type: string
+                kind:
+                    type: string
+                occurred_at:
+                    format: date-time
+                    type: string
+                summary:
+                    type: string
+                task_id:
+                    format: uuid
+                    type: string
+            required:
+                - id
+                - event_id
+                - task_id
+                - kind
+                - summary
+                - occurred_at
+            type: object
+        Asset:
+            properties:
+                attributes:
+                    additionalProperties: true
+                    type: object
+                canonical_key:
+                    type: string
+                confidence:
+                    type: number
+                display_value:
+                    type: string
+                first_seen_at:
+                    format: date-time
+                    type: string
+                id:
+                    format: uuid
+                    type: string
+                kind:
+                    type: string
+                last_seen_at:
+                    format: date-time
+                    type: string
+                organization_id:
+                    format: uuid
+                    type: string
+                parent_id:
+                    format: uuid
+                    type: string
+                raw_value:
+                    type: string
+                source_task_id:
+                    format: uuid
+                    type: string
+            required:
+                - id
+                - organization_id
+                - kind
+                - canonical_key
+                - display_value
+            type: object
+        Constraint:
+            properties:
+                effect:
+                    type: string
+                id:
+                    format: uuid
+                    type: string
+                source:
+                    type: string
+                text:
+                    type: string
+            required:
+                - effect
+                - text
+            type: object
+        Coverage:
+            properties:
+                anchored_assets:
+                    type: integer
+                asset_count:
+                    type: integer
+                goal_count:
+                    type: integer
+                proven_goal_count:
+                    type: integer
+            required:
+                - asset_count
+                - anchored_assets
+                - goal_count
+                - proven_goal_count
+            type: object
+        CreateTaskRequest:
+            properties:
+                constraints:
+                    items:
+                        $ref: '#/components/schemas/Constraint'
+                    type: array
+                description:
+                    type: string
+                execution:
+                    properties:
+                        budget:
+                            additionalProperties: true
+                            type: object
+                        deadline_at:
+                            format: date-time
+                            type:
+                                - string
+                                - "null"
+                        policy_mode:
+                            type: string
+                        worker_limit:
+                            type: integer
+                    required: []
+                    type: object
+                goals:
+                    items:
+                        $ref: '#/components/schemas/Goal'
+                    type: array
+                llm_profile_chain:
+                    items:
+                        format: uuid
+                        type: string
+                    type: array
+                scope:
+                    properties:
+                        entries:
+                            items:
+                                $ref: '#/components/schemas/ScopeEntry'
+                            type: array
+                    required:
+                        - entries
+                    type: object
+                title:
+                    type: string
+            required:
+                - title
+                - goals
+                - scope
+            type: object
+        Goal:
+            properties:
+                id:
+                    format: uuid
+                    type: string
+                priority:
+                    type: integer
+                state:
+                    type: string
+                text:
+                    type: string
+            required:
+                - text
+                - priority
+            type: object
+        Graph:
+            properties:
+                anchors:
+                    items:
+                        properties:
+                            asset_id:
+                                format: uuid
+                                type: string
+                            asset_kind:
+                                type: string
+                            asset_value:
+                                type: string
+                            node_id:
+                                format: uuid
+                                type: string
+                        required:
+                            - node_id
+                            - asset_id
+                            - asset_kind
+                            - asset_value
+                        type: object
+                    type: array
+                edges:
+                    items:
+                        properties:
+                            from_node_id:
+                                format: uuid
+                                type: string
+                            kind:
+                                type: string
+                            to_node_id:
+                                format: uuid
+                                type: string
+                        required:
+                            - from_node_id
+                            - to_node_id
+                            - kind
+                        type: object
+                    type: array
+                nodes:
+                    items:
+                        $ref: '#/components/schemas/Node'
+                    type: array
+            required:
+                - nodes
+                - edges
+                - anchors
+            type: object
         HealthCheck:
             properties:
                 detail:
@@ -34,6 +243,35 @@ components:
                 - version
                 - checks
             type: object
+        Node:
+            properties:
+                created_at:
+                    format: date-time
+                    type: string
+                id:
+                    format: uuid
+                    type: string
+                kind:
+                    type: string
+                run_id:
+                    format: uuid
+                    type: string
+                source_intent_id:
+                    format: uuid
+                    type: string
+                state:
+                    type: string
+                summary:
+                    type: string
+                tool_call_id:
+                    format: uuid
+                    type: string
+            required:
+                - id
+                - kind
+                - state
+                - summary
+            type: object
         Problem:
             properties:
                 detail:
@@ -55,12 +293,2158 @@ components:
                 - status
                 - request_id
             type: object
+        ScopeEntry:
+            properties:
+                effect:
+                    enum:
+                        - allow
+                        - deny
+                    type: string
+                id:
+                    format: uuid
+                    type: string
+                kind:
+                    enum:
+                        - domain
+                        - ip
+                        - cidr
+                        - url_prefix
+                        - service
+                    type: string
+                normalized_value:
+                    type: string
+                path_prefix:
+                    type: string
+                ports:
+                    items:
+                        type: integer
+                    type: array
+                value:
+                    type: string
+            required:
+                - effect
+                - kind
+                - value
+                - ports
+            type: object
+        Task:
+            properties:
+                budget:
+                    additionalProperties: true
+                    type: object
+                created_at:
+                    format: date-time
+                    type: string
+                created_by:
+                    format: uuid
+                    type: string
+                deadline_at:
+                    format: date-time
+                    type:
+                        - string
+                        - "null"
+                description:
+                    type: string
+                id:
+                    format: uuid
+                    type: string
+                organization_id:
+                    format: uuid
+                    type: string
+                policy_mode:
+                    type: string
+                scope_version:
+                    type: integer
+                status:
+                    type: string
+                title:
+                    type: string
+                updated_at:
+                    format: date-time
+                    type: string
+                version:
+                    type: integer
+                worker_limit:
+                    type: integer
+            required:
+                - id
+                - organization_id
+                - title
+                - status
+                - version
+                - scope_version
+            type: object
+        TaskDetail:
+            properties:
+                constraints:
+                    items:
+                        $ref: '#/components/schemas/Constraint'
+                    type: array
+                goals:
+                    items:
+                        $ref: '#/components/schemas/Goal'
+                    type: array
+                scope:
+                    items:
+                        $ref: '#/components/schemas/ScopeEntry'
+                    type: array
+                task:
+                    $ref: '#/components/schemas/Task'
+            required:
+                - task
+                - goals
+                - constraints
+                - scope
+            type: object
+        User:
+            properties:
+                created_at:
+                    format: date-time
+                    type: string
+                email:
+                    format: email
+                    type: string
+                id:
+                    format: uuid
+                    type: string
+                organization_id:
+                    format: uuid
+                    type: string
+                role:
+                    enum:
+                        - admin
+                        - operator
+                        - reviewer
+                        - viewer
+                    type: string
+                status:
+                    type: string
+            required:
+                - id
+                - organization_id
+                - email
+                - role
+                - status
+            type: object
+    securitySchemes:
+        SessionCookie:
+            in: cookie
+            name: tianfa_session
+            type: apiKey
 info:
-    description: 授权安全验证平台 API。当前文档覆盖 Phase 0 基础契约。
+    description: 授权安全验证平台 API。当前文档覆盖 Phase 0 与 Phase 1。
     title: TianFa API
     version: 0.1.0
 openapi: 3.1.0
 paths:
+    /api/v1/assets:
+        get:
+            operationId: listAssets
+            parameters:
+                - in: query
+                  name: cursor
+                  schema:
+                    format: uuid
+                    type: string
+                - in: query
+                  name: limit
+                  schema:
+                    default: 30
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                - in: query
+                  name: kind
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            $ref: '#/components/schemas/Asset'
+                                        type: array
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 列出组织资产
+        post:
+            operationId: upsertAsset
+            parameters:
+                - in: header
+                  name: X-CSRF-Token
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                attributes:
+                                    additionalProperties: true
+                                    type: object
+                                confidence:
+                                    type: number
+                                kind:
+                                    type: string
+                                parent_id:
+                                    format: uuid
+                                    type: string
+                                source_task_id:
+                                    format: uuid
+                                    type: string
+                                value:
+                                    type: string
+                            required:
+                                - kind
+                                - value
+                            type: object
+                required: true
+            responses:
+                "201":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        $ref: '#/components/schemas/Asset'
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 规范化并合并资产
+    /api/v1/assets/graph:
+        get:
+            operationId: getAssetGraph
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        properties:
+                                            edges:
+                                                items:
+                                                    properties:
+                                                        from_asset_id:
+                                                            format: uuid
+                                                            type: string
+                                                        to_asset_id:
+                                                            format: uuid
+                                                            type: string
+                                                    required:
+                                                        - from_asset_id
+                                                        - to_asset_id
+                                                    type: object
+                                                type: array
+                                            nodes:
+                                                items:
+                                                    $ref: '#/components/schemas/Asset'
+                                                type: array
+                                        required:
+                                            - nodes
+                                            - edges
+                                        type: object
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 查询组织资产图
+    /api/v1/auth/login:
+        post:
+            operationId: login
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                email:
+                                    type: string
+                                password:
+                                    type: string
+                            required:
+                                - email
+                                - password
+                            type: object
+                required: true
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        $ref: '#/components/schemas/User'
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            summary: 登录并设置 Session 与 CSRF Cookie
+    /api/v1/auth/logout:
+        post:
+            operationId: logout
+            parameters:
+                - in: header
+                  name: X-CSRF-Token
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "204":
+                    description: 已注销
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 注销会话
+    /api/v1/me:
+        get:
+            operationId: getMe
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        $ref: '#/components/schemas/User'
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 当前用户
+    /api/v1/nodes/{id}:
+        get:
+            operationId: getNode
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        $ref: '#/components/schemas/Node'
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 查询探索节点
+    /api/v1/nodes/{id}/assets:
+        post:
+            operationId: anchorAsset
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+                - in: header
+                  name: X-CSRF-Token
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                asset_id:
+                                    format: uuid
+                                    type: string
+                            required:
+                                - asset_id
+                            type: object
+                required: true
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        properties:
+                                            asset_id:
+                                                format: uuid
+                                                type: string
+                                        required:
+                                            - asset_id
+                                        type: object
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 将探索节点锚定到资产
+    /api/v1/tasks:
+        get:
+            operationId: listTasks
+            parameters:
+                - in: query
+                  name: cursor
+                  schema:
+                    format: uuid
+                    type: string
+                - in: query
+                  name: limit
+                  schema:
+                    default: 30
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            $ref: '#/components/schemas/Task'
+                                        type: array
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 列出任务
+        post:
+            operationId: createTask
+            parameters:
+                - in: header
+                  name: X-CSRF-Token
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/CreateTaskRequest'
+                required: true
+            responses:
+                "201":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        $ref: '#/components/schemas/TaskDetail'
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 创建任务草稿
+    /api/v1/tasks/{id}:
+        get:
+            operationId: getTask
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        $ref: '#/components/schemas/TaskDetail'
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 任务详情
+        patch:
+            operationId: updateTask
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+                - in: header
+                  name: X-CSRF-Token
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                description:
+                                    type: string
+                                title:
+                                    type: string
+                                version:
+                                    type: integer
+                            required:
+                                - version
+                            type: object
+                required: true
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        $ref: '#/components/schemas/Task'
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 修改草稿任务
+    /api/v1/tasks/{id}/activities:
+        get:
+            operationId: listActivities
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+                - in: query
+                  name: limit
+                  schema:
+                    default: 30
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            $ref: '#/components/schemas/Activity'
+                                        type: array
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 查询任务 Activity
+    /api/v1/tasks/{id}/assets:
+        post:
+            operationId: linkAsset
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+                - in: header
+                  name: X-CSRF-Token
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                asset_id:
+                                    format: uuid
+                                    type: string
+                            required:
+                                - asset_id
+                            type: object
+                required: true
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        properties:
+                                            asset_id:
+                                                format: uuid
+                                                type: string
+                                        required:
+                                            - asset_id
+                                        type: object
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 关联现有资产与任务根节点
+    /api/v1/tasks/{id}/constraints:
+        post:
+            operationId: addConstraint
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+                - in: header
+                  name: X-CSRF-Token
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                effect:
+                                    type: string
+                                text:
+                                    type: string
+                                version:
+                                    type: integer
+                            required:
+                                - version
+                                - effect
+                                - text
+                            type: object
+                required: true
+            responses:
+                "201":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        $ref: '#/components/schemas/TaskDetail'
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 向草稿增加约束
+    /api/v1/tasks/{id}/coverage:
+        get:
+            operationId: getCoverage
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        $ref: '#/components/schemas/Coverage'
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 查询任务图覆盖
+    /api/v1/tasks/{id}/goals:
+        post:
+            operationId: addGoal
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+                - in: header
+                  name: X-CSRF-Token
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                priority:
+                                    type: integer
+                                text:
+                                    type: string
+                                version:
+                                    type: integer
+                            required:
+                                - version
+                                - text
+                                - priority
+                            type: object
+                required: true
+            responses:
+                "201":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        $ref: '#/components/schemas/TaskDetail'
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 向草稿增加目标并写入探索图
+    /api/v1/tasks/{id}/graph:
+        get:
+            operationId: getGraph
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        $ref: '#/components/schemas/Graph'
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 查询探索血缘图
+    /api/v1/tasks/{id}/scope:
+        put:
+            operationId: replaceScope
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+                - in: header
+                  name: X-CSRF-Token
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                entries:
+                                    items:
+                                        $ref: '#/components/schemas/ScopeEntry'
+                                    type: array
+                                version:
+                                    type: integer
+                            required:
+                                - version
+                                - entries
+                            type: object
+                required: true
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        $ref: '#/components/schemas/TaskDetail'
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 替换草稿范围并升级版本
+    /api/v1/tasks/{id}/scope:validate:
+        post:
+            operationId: validateScope
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+                - in: header
+                  name: X-CSRF-Token
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                entries:
+                                    items:
+                                        $ref: '#/components/schemas/ScopeEntry'
+                                    type: array
+                            required:
+                                - entries
+                            type: object
+                required: true
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            $ref: '#/components/schemas/ScopeEntry'
+                                        type: array
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 规范化并校验范围
+    /api/v1/tasks/{id}:start:
+        post:
+            operationId: startTask
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+                - in: header
+                  name: X-CSRF-Token
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                version:
+                                    type: integer
+                            required:
+                                - version
+                            type: object
+                required: true
+            responses:
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 检查并启动任务；Phase 1 无模型时返回 409
+    /api/v1/users:
+        get:
+            operationId: listUsers
+            parameters:
+                - in: query
+                  name: cursor
+                  schema:
+                    format: uuid
+                    type: string
+                - in: query
+                  name: limit
+                  schema:
+                    default: 30
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            $ref: '#/components/schemas/User'
+                                        type: array
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 列出组织用户
+        post:
+            operationId: createUser
+            parameters:
+                - in: header
+                  name: X-CSRF-Token
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                email:
+                                    type: string
+                                password:
+                                    type: string
+                                role:
+                                    type: string
+                            required:
+                                - email
+                                - password
+                                - role
+                            type: object
+                required: true
+            responses:
+                "201":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        $ref: '#/components/schemas/User'
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 创建组织用户
+    /api/v1/users/{id}:
+        patch:
+            operationId: updateUser
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+                - in: header
+                  name: X-CSRF-Token
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                role:
+                                    type: string
+                                status:
+                                    type: string
+                            required: []
+                            type: object
+                required: true
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        $ref: '#/components/schemas/User'
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        required:
+                                            - request_id
+                                        type: object
+                                required:
+                                    - data
+                                    - meta
+                                type: object
+                    description: 成功
+                "400":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "401":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "403":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "404":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "409":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "422":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+                "503":
+                    content:
+                        application/problem+json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 错误
+            security:
+                - SessionCookie: []
+            summary: 修改角色或停用用户
     /health/live:
         get:
             operationId: getLiveness

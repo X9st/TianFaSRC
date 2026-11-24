@@ -1,9 +1,9 @@
-# TianFa 分阶段实现计划
+# 天罚分阶段实现计划
 
 本文是规格第 18 章要求的执行计划。一次只声明一个 Phase 完成；后续阶段不得用
 内存 Mock、前端假数据或 Prompt 约定替代真实持久化和程序校验。
 
-## Phase 0 — 骨架与契约（当前）
+## Phase 0 — 骨架与契约（已验收）
 
 - Go 模块化单体、Next.js 静态导出、Docker Compose 与 PostgreSQL。
 - PostgreSQL advisory lock 保护的内嵌迁移框架。
@@ -13,12 +13,14 @@
 
 验收：空系统可构建并启动；迁移可重复执行；静态前端由同一 Go 进程提供。
 
-## Phase 1 — 身份、任务与双图
+## Phase 1 — 身份、任务与双图（当前）
 
 - 单组织初始化、Session/CSRF/RBAC。
 - Task、Goal、Constraint、Scope 聚合与受管状态转换。
 - 资产图、探索图、锚点、Transactional Outbox。
 - UI 完成任务创建、范围确认、任务列表和图/覆盖查询。
+
+验收证据与 Phase 2 模型链边界见 [phase1-plan.md](phase1-plan.md) 和 [ADR-0002](adr/0002-draft-without-llm-profile.md)。
 
 ## Phase 2 — LLM 与 Agent Runtime
 

@@ -61,11 +61,11 @@ func TestMigrateIdempotentAndConcurrent(t *testing.T) {
 			t.Errorf("drop test database: %v", err)
 		}
 	})
-	config.Database = name
-	poolConfig, err := pgxpool.ParseConfig(config.ConnString())
+	poolConfig, err := pgxpool.ParseConfig(baseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
+	poolConfig.ConnConfig.Database = name
 	poolConfig.MaxConns = 4
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
@@ -96,8 +96,8 @@ func TestMigrateIdempotentAndConcurrent(t *testing.T) {
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("migration count = %d, want 1", count)
+	if count != 2 {
+		t.Fatalf("migration count = %d, want 2", count)
 	}
 	var metadataExists bool
 	if err := pool.QueryRow(ctx, "SELECT to_regclass('system_metadata') IS NOT NULL").Scan(&metadataExists); err != nil {

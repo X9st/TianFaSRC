@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/X9st/TianFaSRC/internal/system"
@@ -70,5 +71,15 @@ func TestUnknownAPIReturnsProblem(t *testing.T) {
 	}
 	if got := recorder.Header().Get("Content-Type"); got != "application/problem+json" {
 		t.Fatalf("Content-Type = %q", got)
+	}
+}
+
+func TestStaticExportRoute(t *testing.T) {
+	for path, heading := range map[string]string{"/login/": "登录工作台", "/tasks/": "正在验证登录状态", "/assets/": "正在验证登录状态", "/users/": "正在验证登录状态"} {
+		recorder := httptest.NewRecorder()
+		testHandler(t, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), heading) || strings.Contains(recorder.Body.String(), "欢迎来到天罚控制台") {
+			t.Fatalf("%s export status=%d", path, recorder.Code)
+		}
 	}
 }

@@ -2,9 +2,8 @@ package api
 
 import "gopkg.in/yaml.v3"
 
-// OpenAPI is generated from the same route constants and response contract
-// used by the handlers. Adding a Phase 1 route requires updating this source
-// and regenerating api/openapi.yaml.
+// OpenAPI is generated from the API response contract and route schemas.
+// Route changes must update this source and regenerate api/openapi.yaml.
 func OpenAPI() ([]byte, error) {
 	response := func(description string) map[string]any {
 		return map[string]any{
@@ -18,7 +17,7 @@ func OpenAPI() ([]byte, error) {
 		"openapi": "3.1.0",
 		"info": map[string]any{
 			"title": "TianFa API", "version": "0.1.0",
-			"description": "授权安全验证平台 API。当前文档覆盖 Phase 0 基础契约。",
+			"description": "授权安全验证平台 API。当前文档覆盖 Phase 0 与 Phase 1。",
 		},
 		"servers": []any{map[string]any{"url": "/"}},
 		"paths": map[string]any{
@@ -64,5 +63,6 @@ func OpenAPI() ([]byte, error) {
 			},
 		}},
 	}
+	addPhase1OpenAPI(spec)
 	return yaml.Marshal(spec)
 }

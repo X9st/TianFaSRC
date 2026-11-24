@@ -1,13 +1,16 @@
 package api
 
 import (
+	"github.com/jackc/pgx/v5/pgxpool"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/X9st/TianFaSRC/internal/auth"
 	"github.com/X9st/TianFaSRC/internal/system"
+	"github.com/X9st/TianFaSRC/internal/task"
 	"github.com/X9st/TianFaSRC/internal/webui"
 )
 
@@ -15,6 +18,7 @@ type Options struct {
 	Logger    *slog.Logger
 	Version   string
 	Readiness system.Readiness
+	Pool      *pgxpool.Pool
 }
 
 const (
@@ -40,6 +44,9 @@ func NewHandler(opts Options) http.Handler {
 			Status: status, Service: "tianfa-server", Version: opts.Version, Checks: checks,
 		})
 	})
+	if opts.Pool != nil {
+		phase1API{auth: auth.Store{Pool: opts.Pool}, tasks: task.Store{Pool: opts.Pool}}.routes(mux)
+	}
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusNotFound, "route-not-found", "接口不存在", "请求的 API 路由尚未定义")
 	})
@@ -63,7 +70,7 @@ func spaFileHandler(dist fs.FS, fileServer http.Handler) http.Handler {
 			writeProblem(w, r, http.StatusMethodNotAllowed, "method-not-allowed", "方法不允许", "该资源只支持读取")
 			return
 		}
-		path := strings.TrimPrefix(r.URL.Path, "/")
+		path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/"), "/")
 		if path == "" {
 			path = "index.html"
 		}
