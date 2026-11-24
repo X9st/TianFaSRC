@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: tianfa
+      POSTGRES_USER: tianfa
+      POSTGRES_PASSWORD: tianfa
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tianfa -d tianfa"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TIANFA_HTTP_ADDR: :8080
+      TIANFA_PROXY_ADDR: 127.0.0.1:8081
+      TIANFA_DATABASE_URL: postgres://tianfa:tianfa@postgres:5432/tianfa?sslmode=disable
+      TIANFA_DATA_DIR: /var/lib/tianfa
+      TIANFA_LOG_LEVEL: info
+    ports:
+      - "${TIANFA_HOST_PORT:-8080}:8080"
+      - "127.0.0.1:${TIANFA_PROXY_HOST_PORT:-8081}:8081"
+    volumes:
+      - ./data:/var/lib/tianfa
+      - ./skills:/app/skills:ro
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+

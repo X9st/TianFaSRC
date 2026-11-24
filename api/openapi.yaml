@@ -1,0 +1,93 @@
+components:
+    schemas:
+        HealthCheck:
+            properties:
+                detail:
+                    type: string
+                status:
+                    enum:
+                        - up
+                        - down
+                    type: string
+            required:
+                - status
+            type: object
+        HealthResponse:
+            properties:
+                checks:
+                    additionalProperties:
+                        $ref: '#/components/schemas/HealthCheck'
+                    type: object
+                service:
+                    const: tianfa-server
+                    type: string
+                status:
+                    enum:
+                        - ok
+                        - not_ready
+                    type: string
+                version:
+                    type: string
+            required:
+                - status
+                - service
+                - version
+                - checks
+            type: object
+        Problem:
+            properties:
+                detail:
+                    type: string
+                instance:
+                    type: string
+                request_id:
+                    type: string
+                status:
+                    type: integer
+                title:
+                    type: string
+                type:
+                    format: uri
+                    type: string
+            required:
+                - type
+                - title
+                - status
+                - request_id
+            type: object
+info:
+    description: 授权安全验证平台 API。当前文档覆盖 Phase 0 基础契约。
+    title: TianFa API
+    version: 0.1.0
+openapi: 3.1.0
+paths:
+    /health/live:
+        get:
+            operationId: getLiveness
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/HealthResponse'
+                    description: 进程存活
+            summary: 进程存活检查
+    /health/ready:
+        get:
+            operationId: getReadiness
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/HealthResponse'
+                    description: 所有关键依赖就绪
+                "503":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/HealthResponse'
+                    description: 至少一个关键依赖未就绪
+            summary: 依赖就绪检查
+servers:
+    - url: /

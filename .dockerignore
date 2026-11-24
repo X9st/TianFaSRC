@@ -1,0 +1,12 @@
+.git
+.github
+.env
+bin
+data
+web/.next
+web/out
+web/node_modules
+internal/webui/dist
+coverage
+*.log
+

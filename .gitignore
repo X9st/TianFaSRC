@@ -1,0 +1,14 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+data/
+web/.next/
+web/out/
+web/node_modules/
+web/tsconfig.tsbuildinfo
+coverage/
+bin/
+*.log
+.playwright-mcp/
+
