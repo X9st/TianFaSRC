@@ -5,7 +5,7 @@
 
 ## 决策
 
-使用用户仓库上下文提供的独立标识：产品名“天伐 / TianFa”，Go module
+使用用户确认的独立标识：产品名“天罚 / TianFa”，Go module
 `github.com/X9st/TianFaSRC`，二进制 `tianfa-server`，Compose 服务 `app/postgres`，
 环境变量前缀 `TIANFA_`，数据库名 `tianfa`。
 

@@ -66,7 +66,7 @@ export default function Dashboard() {
       setError(null);
       setUpdatedAt(new Date());
     } catch {
-      setError("无法连接到天伐服务，请确认后端已经启动。 ");
+      setError("无法连接到天罚服务，请确认后端已经启动。 ");
     } finally {
       setLoading(false);
     }
@@ -87,7 +87,7 @@ export default function Dashboard() {
         <div className="brand">
           <div className="brand-mark" aria-hidden="true"><ShieldCheck size={22} strokeWidth={2.2} /></div>
           <div>
-            <div className="brand-name">天伐</div>
+            <div className="brand-name">天罚</div>
             <div className="brand-caption">TIANFA SECURITY</div>
           </div>
         </div>
@@ -118,7 +118,7 @@ export default function Dashboard() {
         <header className="topbar">
           <div>
             <div className="eyebrow"><span>控制中心</span><ChevronRight size={13} /><strong>总览</strong></div>
-            <h1>欢迎来到天伐控制台</h1>
+            <h1>欢迎来到天罚控制台</h1>
           </div>
           <div className="top-actions">
             <button className="icon-button" type="button" onClick={() => void refresh()} aria-label="刷新系统状态" disabled={loading}>
@@ -204,7 +204,7 @@ export default function Dashboard() {
           </section>
         </div>
 
-        <footer className="footer"><span>天伐 · 授权安全验证平台</span><span>Phase 0 / 骨架与契约</span></footer>
+        <footer className="footer"><span>天罚 · 授权安全验证平台</span><span>Phase 0 / 骨架与契约</span></footer>
       </main>
     </div>
   );
