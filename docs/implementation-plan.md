@@ -30,10 +30,12 @@
 
 详细范围、阶段边界与测试证据见 [phase2-plan.md](phase2-plan.md)。
 
-## Phase 3 — Durable Engine（下一阶段）
+## Phase 3 — Durable Engine（核心能力已验收）
 
 - Intent Queue、Lease、调度公平性、暂停恢复、Reconciliation。
 - Todo、事件唤醒、Trace、Steer/Kill、上下文压缩。
+
+设计、验收证据与 Phase 4 边界见 [phase3-plan.md](phase3-plan.md)。
 
 ## Phase 4 — Tool、Scope、Skill 与 MCP
 

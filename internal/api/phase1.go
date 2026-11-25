@@ -22,9 +22,10 @@ const sessionCookie = "tianfa_session"
 const csrfCookie = "tianfa_csrf"
 
 type phase1API struct {
-	auth   auth.Store
-	tasks  task.Store
-	engine *agent.Engine
+	auth      auth.Store
+	tasks     task.Store
+	engine    *agent.Engine
+	scheduler *agent.Scheduler
 }
 
 func (api phase1API) routes(mux *http.ServeMux) {
@@ -44,6 +45,15 @@ func (api phase1API) routes(mux *http.ServeMux) {
 			r.SetPathValue("id", strings.TrimSuffix(value, ":advance"))
 			api.advanceTask(w, r)
 			return
+		}
+		if api.scheduler != nil {
+			for _, command := range []string{"pause", "resume", "cancel"} {
+				if strings.HasSuffix(value, ":"+command) {
+					r.SetPathValue("id", strings.TrimSuffix(value, ":"+command))
+					api.controlTask(w, r, command)
+					return
+				}
+			}
 		}
 		if !strings.HasSuffix(value, ":start") {
 			writeProblem(w, r, 404, "route-not-found", "接口不存在", "请求的 API 路由尚未定义")
@@ -72,7 +82,13 @@ func (api phase1API) advanceTask(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := api.engine.Advance(r.Context(), user.OrganizationID, user.ID, r.PathValue("id")); err != nil {
+	var err error
+	if api.scheduler != nil {
+		err = api.scheduler.Wake(r.Context(), user.OrganizationID, r.PathValue("id"), "user.advance")
+	} else {
+		err = api.engine.Advance(r.Context(), user.OrganizationID, user.ID, r.PathValue("id"))
+	}
+	if err != nil {
 		apiError(w, r, err)
 		return
 	}
@@ -285,7 +301,9 @@ func (api phase1API) startTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var err error
-	if api.engine != nil {
+	if api.scheduler != nil {
+		err = api.scheduler.Start(r.Context(), user.OrganizationID, user.ID, r.PathValue("id"), input.Version)
+	} else if api.engine != nil {
 		err = api.engine.Start(r.Context(), user.OrganizationID, user.ID, r.PathValue("id"), input.Version)
 	} else {
 		err = api.tasks.Start(r.Context(), user.OrganizationID, r.PathValue("id"), input.Version)

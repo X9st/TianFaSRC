@@ -16,9 +16,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/term"
 
+	"github.com/X9st/TianFaSRC/internal/agent"
 	"github.com/X9st/TianFaSRC/internal/api"
 	"github.com/X9st/TianFaSRC/internal/auth"
 	"github.com/X9st/TianFaSRC/internal/config"
+	"github.com/X9st/TianFaSRC/internal/llm"
 	"github.com/X9st/TianFaSRC/internal/secret"
 	"github.com/X9st/TianFaSRC/internal/store/postgres"
 	"github.com/X9st/TianFaSRC/internal/system"
@@ -41,6 +43,7 @@ func main() {
 
 	var pool *pgxpool.Pool
 	var secrets *secret.Store
+	var scheduler *agent.Scheduler
 	if cfg.DatabaseURL != "" {
 		pool, err = pgxpool.New(rootCtx, cfg.DatabaseURL)
 		if err != nil {
@@ -68,6 +71,8 @@ func main() {
 			os.Exit(1)
 		}
 		secrets = &secured
+		profiles := llm.Store{Pool: pool, Secrets: secured}
+		scheduler = &agent.Scheduler{Engine: agent.Engine{Pool: pool, Profiles: profiles, Router: llm.Router{Store: profiles}}, Logger: logger}
 		if len(os.Args) > 1 && os.Args[1] == "init-admin" {
 			if err := initAdmin(rootCtx, pool); err != nil {
 				logger.Error("initialize admin", "error", err)
@@ -79,6 +84,9 @@ func main() {
 		logger.Warn("database is not configured; readiness will remain unavailable")
 	}
 	if pool != nil {
+		if scheduler != nil {
+			go scheduler.Run(rootCtx)
+		}
 		go func() {
 			ticker := time.NewTicker(time.Second)
 			defer ticker.Stop()
@@ -106,6 +114,7 @@ func main() {
 			Readiness: system.Readiness{Database: readinessDatabase(pool), DataDir: cfg.DataDir},
 			Pool:      pool,
 			Secrets:   secrets,
+			Scheduler: scheduler,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,

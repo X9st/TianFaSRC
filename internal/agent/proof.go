@@ -39,7 +39,7 @@ func (e Engine) ProveGoal(ctx context.Context, orgID, taskID, goalID string, evi
 		}
 		seen[nodeID] = true
 		var valid bool
-		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM exploration_nodes n JOIN task_intents i ON i.id=n.source_intent_id JOIN agent_runs r ON r.id=n.run_id AND r.intent_id=i.id WHERE n.id=$1 AND n.task_id=$2 AND n.kind='fact' AND n.state='confirmed' AND n.tool_call_id IS NOT NULL AND i.goal_id=$3 AND r.role='worker' AND r.status='succeeded')`, nodeID, taskID, goalID).Scan(&valid)
+		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM exploration_nodes n JOIN task_intents i ON i.id=n.source_intent_id JOIN agent_runs r ON r.id=n.run_id AND r.intent_id=i.id WHERE n.id=$1 AND n.task_id=$2 AND n.kind='fact' AND n.state='confirmed' AND n.tool_call_id IS NOT NULL AND i.goal_id=$3 AND r.role='worker' AND r.status IN ('succeeded','exhausted'))`, nodeID, taskID, goalID).Scan(&valid)
 		if err != nil {
 			return err
 		}

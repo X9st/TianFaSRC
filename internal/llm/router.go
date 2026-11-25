@@ -85,15 +85,36 @@ func (r Router) Complete(ctx context.Context, orgID, taskID, runID, role string,
 				class = "internal"
 			}
 		}
-		if _, err := r.Store.Pool.Exec(ctx, `UPDATE llm_attempts SET status=$2,error_class=NULLIF($3,''),delivered_text=$4,input_tokens=$5,output_tokens=$6,cache_read_tokens=$7,cache_write_tokens=$8,reasoning_tokens=$9,estimated=$10,latency_ms=$11,first_token_ms=$12,completed_at=now() WHERE id=$1`, attemptID, status, class, result.Text, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.CacheReadTokens, result.Usage.CacheWriteTokens, result.Usage.ReasoningTokens, result.Usage.Estimated, time.Since(started).Milliseconds(), result.FirstToken.Milliseconds()); err != nil {
+		settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		tx, err := r.Store.Pool.Begin(settleCtx)
+		if err != nil {
+			cancel()
 			return Completion{}, err
 		}
-		if _, err := r.Store.Pool.Exec(ctx, `UPDATE agent_runs SET profile_id=$2,attempt=$3 WHERE id=$1`, runID, p.ID, ordinal); err != nil {
+		if _, err := tx.Exec(settleCtx, `UPDATE llm_attempts SET status=$2,error_class=NULLIF($3,''),delivered_text=$4,input_tokens=$5,output_tokens=$6,cache_read_tokens=$7,cache_write_tokens=$8,reasoning_tokens=$9,estimated=$10,latency_ms=$11,first_token_ms=$12,completed_at=now() WHERE id=$1`, attemptID, status, class, result.Text, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.CacheReadTokens, result.Usage.CacheWriteTokens, result.Usage.ReasoningTokens, result.Usage.Estimated, time.Since(started).Milliseconds(), result.FirstToken.Milliseconds()); err != nil {
+			_ = tx.Rollback(settleCtx)
+			cancel()
 			return Completion{}, err
 		}
-		if err := r.recordHealth(ctx, p.ID, callErr); err != nil {
+		if _, err := tx.Exec(settleCtx, `UPDATE task_budgets SET input_tokens=input_tokens+$2,output_tokens=output_tokens+$3,updated_at=now() WHERE task_id=$1`, taskID, result.Usage.InputTokens, result.Usage.OutputTokens); err != nil {
+			_ = tx.Rollback(settleCtx)
+			cancel()
 			return Completion{}, err
 		}
+		if _, err := tx.Exec(settleCtx, `UPDATE agent_runs SET profile_id=$2,llm_profile_attempt=$3 WHERE id=$1`, runID, p.ID, ordinal); err != nil {
+			_ = tx.Rollback(settleCtx)
+			cancel()
+			return Completion{}, err
+		}
+		if err := tx.Commit(settleCtx); err != nil {
+			cancel()
+			return Completion{}, err
+		}
+		if err := r.recordHealth(settleCtx, p.ID, callErr); err != nil {
+			cancel()
+			return Completion{}, err
+		}
+		cancel()
 		if callErr == nil {
 			result.Text = partial + result.Text
 			return result, nil

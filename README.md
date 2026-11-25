@@ -4,7 +4,7 @@
 [`全新自主安全验证平台-核心能力实现规格.md`](./全新自主安全验证平台-核心能力实现规格.md)
 为产品事实来源，按 Phase 逐步实现。
 
-当前交付：**Phase 2 — LLM 与 Agent Runtime**。模型路由和结构化规划已可用；真实目标工具和范围强制执行在 Phase 4 接入。
+当前交付：**Phase 3 — Durable Engine**。持久队列、租约恢复、Planner 事件唤醒、共享 Todo、Trace 与人工控制已可用；真实目标工具和范围强制执行在 Phase 4 接入。
 
 ## 本地启动
 
@@ -49,7 +49,7 @@ make dev-web
 `TIANFA_DEV_API_ORIGIN=http://127.0.0.1:18080 make dev-web`。
 初始化管理员的源码开发命令是 `go run ./cmd/server init-admin`。未配置 PostgreSQL 时后端仍可存活，但 `/health/ready` 会返回未就绪。
 
-管理员登录后在 `/models/` 添加模型 Profile 和 API Key，再设置系统默认主备链。相同模型的不同 Key 需分别创建 Profile；任务详情可覆盖主备链，并为目标拆解、规划器、执行者选择链内子链。启动任务会记录 Decomposer、Planner、Intent、Prompt 版本、Transcript 和模型用量。真实目标工具尚未接入时，Worker 将 Intent 标为“待工具验证”，不会把模型推断写成确认 Fact。运行因模型故障阻塞后，可在任务详情触发继续。
+管理员登录后在 `/models/` 添加模型 Profile 和 API Key，再设置系统默认主备链。相同模型的不同 Key 需分别创建 Profile；任务详情可覆盖主备链，并为目标拆解、规划器、执行者选择链内子链。启动任务会进入持久队列，页面自动刷新进度，并记录 Decomposer、Planner、Intent、Prompt 版本、Transcript 和模型用量。可在任务详情暂停、恢复、取消、纠偏、停止或重试方向，并管理有依赖的共享步骤。真实目标工具尚未接入时，Worker 将 Intent 标为“待工具验证”，不会把模型推断写成确认 Fact。
 
 API Key 使用数据目录 `secrets/master.key` 加密保存，该文件权限为 `0600`；部署备份必须同时保留数据库和此密钥文件。若数据库已存在加密凭据而密钥文件丢失，服务会拒绝启动。生产环境应限制数据目录访问。
 
@@ -65,5 +65,5 @@ OpenAPI 由 Go 契约定义生成：`make openapi` 更新文档，
 `TIANFA_TEST_DATABASE_URL`；CI 中默认运行。
 
 需求追踪和阶段计划见 [docs/requirements-traceability.md](docs/requirements-traceability.md)
-与 [docs/implementation-plan.md](docs/implementation-plan.md)。Phase 2 验收结果见 [docs/phase2-plan.md](docs/phase2-plan.md)。
+与 [docs/implementation-plan.md](docs/implementation-plan.md)。Phase 3 验收结果见 [docs/phase3-plan.md](docs/phase3-plan.md)。
 

@@ -23,6 +23,7 @@ type Options struct {
 	Readiness system.Readiness
 	Pool      *pgxpool.Pool
 	Secrets   *secret.Store
+	Scheduler *agent.Scheduler
 }
 
 const (
@@ -54,7 +55,11 @@ func NewHandler(opts Options) http.Handler {
 			profiles := llm.Store{Pool: opts.Pool, Secrets: *opts.Secrets}
 			runtime := &agent.Engine{Pool: opts.Pool, Profiles: profiles, Router: llm.Router{Store: profiles}}
 			base.engine = runtime
+			base.scheduler = opts.Scheduler
 			phase2API{phase1API: base, profiles: profiles}.routes(mux)
+			if opts.Scheduler != nil {
+				phase3API{phase1API: base}.routes(mux)
+			}
 		}
 		base.routes(mux)
 	}

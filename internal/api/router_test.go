@@ -83,3 +83,8 @@ func TestStaticExportRoute(t *testing.T) {
 		}
 	}
 }
+
+func TestPhase3RouteRegistration(t *testing.T) {
+	mux := http.NewServeMux()
+	phase3API{}.routes(mux)
+}

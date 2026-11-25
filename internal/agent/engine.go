@@ -39,6 +39,9 @@ type Intent struct {
 	SuccessCriteria string  `json:"success_criteria"`
 	Status          string  `json:"status"`
 	BlockingReason  *string `json:"blocking_reason,omitempty"`
+	StopReason      *string `json:"stop_reason,omitempty"`
+	Attempt         int     `json:"attempt"`
+	Priority        int     `json:"priority"`
 }
 type Run struct {
 	ID            string     `json:"id"`
@@ -241,18 +244,33 @@ func (e Engine) advanceLocked(ctx context.Context, orgID, actorID, taskID string
 }
 
 func (e Engine) runRole(ctx context.Context, orgID, actorID, taskID, intentID, role, contextText, observation string) (string, error) {
+	return e.runRoleOn(ctx, orgID, actorID, taskID, intentID, role, contextText, observation, "")
+}
+
+func (e Engine) runRoleOn(ctx context.Context, orgID, actorID, taskID, intentID, role, contextText, observation, existingRunID string) (string, error) {
 	prompt, err := e.Profiles.ActivePrompt(ctx, orgID, actorID, role)
 	if err != nil {
 		return "", err
 	}
-	runID := identity.NewID()
+	if existingRunID != "" {
+		err = e.Pool.QueryRow(ctx, `SELECT p.role,p.version,p.body,p.content_hash FROM agent_runs r JOIN prompt_templates p ON p.organization_id=r.organization_id AND p.role=r.role AND p.version=r.prompt_version WHERE r.id=$1 AND r.organization_id=$2`, existingRunID, orgID).Scan(&prompt.Role, &prompt.Version, &prompt.Body, &prompt.ContentHash)
+		if err != nil {
+			return "", err
+		}
+	}
+	runID := existingRunID
+	if runID == "" {
+		runID = identity.NewID()
+	}
 	var intentRef any
 	if intentID != "" {
 		intentRef = intentID
 	}
-	_, err = e.Pool.Exec(ctx, `INSERT INTO agent_runs(id,organization_id,task_id,intent_id,role,status,prompt_version,prompt_hash,session_key) VALUES($1,$2,$3,$4,$5,'running',$6,$7,$8)`, runID, orgID, taskID, intentRef, role, prompt.Version, prompt.ContentHash, "task/"+taskID+"/"+role+"/"+runID)
-	if err != nil {
-		return "", err
+	if existingRunID == "" {
+		_, err = e.Pool.Exec(ctx, `INSERT INTO agent_runs(id,organization_id,task_id,intent_id,role,status,prompt_version,prompt_hash,session_key) VALUES($1,$2,$3,$4,$5,'running',$6,$7,$8)`, runID, orgID, taskID, intentRef, role, prompt.Version, prompt.ContentHash, "task/"+taskID+"/"+role+"/"+runID)
+		if err != nil {
+			return "", err
+		}
 	}
 	messages := []llm.Message{{Role: "system", Content: llm.SystemPrompt(prompt)}, {Role: "user", Content: contextText}}
 	for i, m := range messages {
@@ -266,7 +284,11 @@ func (e Engine) runRole(ctx context.Context, orgID, actorID, taskID, intentID, r
 			return "", err
 		}
 	}
-	result, callErr := e.Router.Complete(ctx, orgID, taskID, runID, role, messages)
+	modelMessages, err := e.compactForModel(ctx, orgID, taskID, runID, role, messages)
+	if err != nil {
+		return "", err
+	}
+	result, callErr := e.Router.Complete(ctx, orgID, taskID, runID, role, modelMessages)
 	if result.Text != "" {
 		if err := e.saveMessage(ctx, runID, len(messages), "assistant", "trusted", result.Text); err != nil {
 			return "", err
@@ -289,7 +311,7 @@ func (e Engine) runRole(ctx context.Context, orgID, actorID, taskID, intentID, r
 			}
 		}
 	}
-	_, err = e.Pool.Exec(ctx, `UPDATE agent_runs SET status=$2,error_class=$3,blocked_until=$4,completed_at=now() WHERE id=$1`, runID, status, class, until)
+	_, err = e.Pool.Exec(ctx, `UPDATE agent_runs SET status=$2,error_class=$3,blocked_until=$4,completed_at=now() WHERE id=$1 AND status='running'`, runID, status, class, until)
 	if err != nil {
 		return "", err
 	}
@@ -308,7 +330,23 @@ type planOutput struct {
 		GoalID          string `json:"goal_id"`
 		Objective       string `json:"objective"`
 		SuccessCriteria string `json:"success_criteria"`
+		TodoKey         string `json:"todo_key"`
+		Priority        *int   `json:"priority"`
 	} `json:"intents"`
+	Todos []struct {
+		Key       string   `json:"key"`
+		Title     string   `json:"title"`
+		Detail    string   `json:"detail"`
+		DependsOn []string `json:"depends_on"`
+	} `json:"todos"`
+	Steers []struct {
+		IntentID string `json:"intent_id"`
+		Message  string `json:"message"`
+	} `json:"steers"`
+	Stops []struct {
+		IntentID string `json:"intent_id"`
+		Reason   string `json:"reason"`
+	} `json:"stops"`
 	Proofs []struct {
 		GoalID          string   `json:"goal_id"`
 		EvidenceNodeIDs []string `json:"evidence_node_ids"`
@@ -386,12 +424,15 @@ func (e Engine) insertIntents(ctx context.Context, orgID, taskID, raw string, li
 	if err := parseObject(raw, &plan); err != nil {
 		return nil, fmt.Errorf("%w: planner output is not structured JSON: %v", llm.ErrInvalid, err)
 	}
+	var taskStatus string
+	if err:=e.Pool.QueryRow(ctx,`SELECT status FROM tasks WHERE id=$1 AND organization_id=$2`,taskID,orgID).Scan(&taskStatus);err!=nil{return nil,err}
+	if taskStatus!="running"{return nil,task.ErrConflict}
 	for _, proof := range plan.Proofs {
 		if err := e.ProveGoal(ctx, orgID, taskID, proof.GoalID, proof.EvidenceNodeIDs); err != nil {
 			return nil, err
 		}
 	}
-	if len(plan.Intents) == 0 {
+	if len(plan.Intents) == 0 && len(plan.Todos) == 0 && len(plan.Steers) == 0 && len(plan.Stops) == 0 {
 		if strings.TrimSpace(plan.PlanningBlocked) == "" && len(plan.Proofs) == 0 {
 			return nil, fmt.Errorf("%w: planner produced neither intent nor planning_blocked", llm.ErrInvalid)
 		}
@@ -406,7 +447,115 @@ func (e Engine) insertIntents(ctx context.Context, orgID, taskID, raw string, li
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
+	if err=tx.QueryRow(ctx,`SELECT status FROM tasks WHERE id=$1 AND organization_id=$2 FOR UPDATE`,taskID,orgID).Scan(&taskStatus);err!=nil{return nil,err}
+	if taskStatus!="running"{return nil,task.ErrConflict}
 	out := []Intent{}
+	for _, steer := range plan.Steers {
+		message := strings.TrimSpace(steer.Message)
+		if message == "" || len(message) > 4000 {
+			return nil, llm.ErrInvalid
+		}
+		var actorID string
+		err = tx.QueryRow(ctx, `SELECT t.created_by FROM task_intents i JOIN tasks t ON t.id=i.task_id WHERE i.id=$1 AND i.task_id=$2 AND t.organization_id=$3 AND i.status IN ('open','leased','running','blocked')`, steer.IntentID, taskID, orgID).Scan(&actorID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, llm.ErrInvalid
+		}
+		if err != nil {
+			return nil, err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO worker_steers(id,task_id,intent_id,actor_user_id,message,source) VALUES($1,$2,$3,$4,$5,'planner')`, identity.NewID(), taskID, steer.IntentID, actorID, message); err != nil {
+			return nil, err
+		}
+		if err = event(ctx, tx, orgID, taskID, "intent.steered", map[string]any{"intent_id": steer.IntentID, "source": "planner", "message": message}); err != nil {
+			return nil, err
+		}
+	}
+	for _, stop := range plan.Stops {
+		reason := strings.TrimSpace(stop.Reason)
+		if reason == "" || len(reason) > 4000 {
+			return nil, llm.ErrInvalid
+		}
+		tag, stopErr := tx.Exec(ctx, `UPDATE task_intents SET status='stopped',stop_reason=$3,blocking_reason=NULL,updated_at=now() WHERE id=$1 AND task_id=$2 AND status IN ('open','leased','running','blocked','exhausted')`, stop.IntentID, taskID, reason)
+		if stopErr != nil {
+			return nil, stopErr
+		}
+		if tag.RowsAffected() != 1 {
+			return nil, llm.ErrInvalid
+		}
+		if _, err = tx.Exec(ctx, `UPDATE exploration_nodes SET state='stopped',updated_at=now() WHERE id=$1`, stop.IntentID); err != nil {
+			return nil, err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE agent_runs SET status='stopped',error_class='planner_stop',completed_at=now() WHERE id IN (SELECT run_id FROM worker_leases WHERE intent_id=$1) AND status='running'`, stop.IntentID); err != nil {
+			return nil, err
+		}
+		if _, err = tx.Exec(ctx, `DELETE FROM worker_leases WHERE intent_id=$1`, stop.IntentID); err != nil {
+			return nil, err
+		}
+		if err = event(ctx, tx, orgID, taskID, "intent.stopped", map[string]any{"intent_id": stop.IntentID, "source": "planner", "reason": reason}); err != nil {
+			return nil, err
+		}
+	}
+	todoIDs := map[string]string{}
+	dependencyKeys := map[string][]string{}
+	for _, todo := range plan.Todos {
+		if _, exists := dependencyKeys[todo.Key]; exists {
+			return nil, llm.ErrInvalid
+		}
+		dependencyKeys[todo.Key] = todo.DependsOn
+	}
+	visiting, visited := map[string]bool{}, map[string]bool{}
+	var checkCycle func(string) bool
+	checkCycle = func(key string) bool {
+		if visiting[key] {
+			return false
+		}
+		if visited[key] {
+			return true
+		}
+		deps, ok := dependencyKeys[key]
+		if !ok {
+			return false
+		}
+		visiting[key] = true
+		for _, dep := range deps {
+			if !checkCycle(dep) {
+				return false
+			}
+		}
+		visiting[key] = false
+		visited[key] = true
+		return true
+	}
+	for key := range dependencyKeys {
+		if !checkCycle(key) {
+			return nil, llm.ErrInvalid
+		}
+	}
+	for _, todo := range plan.Todos {
+		key, title := strings.TrimSpace(todo.Key), strings.TrimSpace(todo.Title)
+		if key == "" || title == "" || len(key) > 120 || len(title) > 300 || len(todo.Detail) > 4000 || len(todo.DependsOn) > 20 {
+			return nil, llm.ErrInvalid
+		}
+		id := identity.NewID()
+		err := tx.QueryRow(ctx, `INSERT INTO task_todos(id,task_id,title,detail,planner_key) VALUES($1,$2,$3,$4,$5) ON CONFLICT(task_id,planner_key) WHERE planner_key IS NOT NULL DO UPDATE SET updated_at=task_todos.updated_at RETURNING id`, id, taskID, title, todo.Detail, key).Scan(&id)
+		if err != nil {
+			return nil, err
+		}
+		todoIDs[key] = id
+	}
+	for _, todo := range plan.Todos {
+		deps := []string{}
+		for _, key := range todo.DependsOn {
+			id, ok := todoIDs[key]
+			if !ok || id == todoIDs[todo.Key] {
+				return nil, llm.ErrInvalid
+			}
+			deps = append(deps, id)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE task_todos SET depends_on=$2,updated_at=now() WHERE id=$1 AND status='open'`, todoIDs[todo.Key], deps); err != nil {
+			return nil, err
+		}
+	}
 	for _, candidate := range plan.Intents {
 		if len(out) >= limit {
 			break
@@ -416,6 +565,13 @@ func (e Engine) insertIntents(ctx context.Context, orgID, taskID, raw string, li
 		if objective == "" || criteria == "" || len(objective) > 4000 || len(criteria) > 4000 {
 			return nil, llm.ErrInvalid
 		}
+		priority := 5
+		if candidate.Priority != nil {
+			priority = *candidate.Priority
+			if priority < 0 || priority > 10 {
+				return nil, llm.ErrInvalid
+			}
+		}
 		var exists bool
 		err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM task_goals WHERE id=$1 AND task_id=$2 AND state='open')`, candidate.GoalID, taskID).Scan(&exists)
 		if err != nil {
@@ -423,6 +579,22 @@ func (e Engine) insertIntents(ctx context.Context, orgID, taskID, raw string, li
 		}
 		if !exists {
 			return nil, llm.ErrInvalid
+		}
+		var todoRef any
+		if candidate.TodoKey != "" {
+			id, ok := todoIDs[candidate.TodoKey]
+			if !ok {
+				return nil, llm.ErrInvalid
+			}
+			var ready bool
+			err = tx.QueryRow(ctx, `SELECT status='open' AND NOT EXISTS(SELECT 1 FROM unnest(depends_on) dep JOIN task_todos p ON p.id=dep WHERE p.status<>'done') FROM task_todos WHERE id=$1`, id).Scan(&ready)
+			if err != nil {
+				return nil, err
+			}
+			if !ready {
+				continue
+			}
+			todoRef = id
 		}
 		key := dedup(candidate.GoalID, objective)
 		var prior string
@@ -461,7 +633,7 @@ func (e Engine) insertIntents(ctx context.Context, orgID, taskID, raw string, li
 		if err != nil {
 			return nil, err
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO task_intents(id,task_id,goal_id,objective,success_criteria,dedup_key) VALUES($1,$2,$3,$4,$5,$6)`, id, taskID, candidate.GoalID, objective, criteria, key)
+		_, err = tx.Exec(ctx, `INSERT INTO task_intents(id,task_id,goal_id,objective,success_criteria,dedup_key,todo_id,priority) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, id, taskID, candidate.GoalID, objective, criteria, key, todoRef, priority)
 		if err != nil {
 			return nil, err
 		}
@@ -472,12 +644,23 @@ func (e Engine) insertIntents(ctx context.Context, orgID, taskID, raw string, li
 		if err := event(ctx, tx, orgID, taskID, "intent.created", map[string]any{"intent_id": id, "goal_id": candidate.GoalID}); err != nil {
 			return nil, err
 		}
+		if todoRef != nil {
+			if _, err := tx.Exec(ctx, `UPDATE task_todos SET intent_id=$2,updated_at=now() WHERE id=$1`, todoRef, id); err != nil {
+				return nil, err
+			}
+		}
 		out = append(out, Intent{ID: id, GoalID: candidate.GoalID, Objective: objective, SuccessCriteria: criteria, Status: "open"})
 	}
 	if len(out) == 0 && len(plan.Proofs) == 0 {
 		reason := strings.TrimSpace(plan.PlanningBlocked)
 		if reason == "" {
-			reason = "规划方向与现有 Intent 重复，等待新观察或人工 Hint"
+			if len(plan.Steers) > 0 || len(plan.Stops) > 0 {
+				reason = "Planner 已调整运行方向，等待反馈"
+			} else if len(plan.Todos) > 0 {
+				reason = "等待前置 Todo 完成或新的规划方向"
+			} else {
+				reason = "规划方向与现有 Intent 重复，等待新观察或人工 Hint"
+			}
 		}
 		if err := event(ctx, tx, orgID, taskID, "agent.planning_blocked", map[string]any{"reason": reason}); err != nil {
 			return nil, err
@@ -545,7 +728,7 @@ func event(ctx context.Context, tx pgx.Tx, orgID, taskID, kind string, data map[
 }
 
 func (e Engine) ListIntents(ctx context.Context, orgID, taskID string) ([]Intent, error) {
-	rows, err := e.Pool.Query(ctx, `SELECT i.id,i.goal_id,i.objective,i.success_criteria,i.status,i.blocking_reason FROM task_intents i JOIN tasks t ON t.id=i.task_id WHERE t.id=$1 AND t.organization_id=$2 ORDER BY i.created_at,i.id`, taskID, orgID)
+	rows, err := e.Pool.Query(ctx, `SELECT i.id,i.goal_id,i.objective,i.success_criteria,i.status,i.blocking_reason,i.stop_reason,i.attempt,i.priority FROM task_intents i JOIN tasks t ON t.id=i.task_id WHERE t.id=$1 AND t.organization_id=$2 ORDER BY i.created_at,i.id`, taskID, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -553,7 +736,7 @@ func (e Engine) ListIntents(ctx context.Context, orgID, taskID string) ([]Intent
 	out := []Intent{}
 	for rows.Next() {
 		var item Intent
-		if err := rows.Scan(&item.ID, &item.GoalID, &item.Objective, &item.SuccessCriteria, &item.Status, &item.BlockingReason); err != nil {
+		if err := rows.Scan(&item.ID, &item.GoalID, &item.Objective, &item.SuccessCriteria, &item.Status, &item.BlockingReason, &item.StopReason, &item.Attempt, &item.Priority); err != nil {
 			return nil, err
 		}
 		out = append(out, item)

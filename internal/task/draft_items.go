@@ -34,8 +34,15 @@ func (s Store) AddGoal(ctx context.Context, orgID, actorID, taskID string, versi
 		return Detail{}, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := lockDraft(ctx, tx, orgID, taskID, version); err != nil {
+	current, err := scanTask(tx.QueryRow(ctx, "SELECT "+taskColumns+" FROM tasks WHERE id=$1 AND organization_id=$2 AND deleted_at IS NULL FOR UPDATE", taskID, orgID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Detail{}, ErrNotFound
+	}
+	if err != nil {
 		return Detail{}, err
+	}
+	if current.Version != version || (current.Status != "draft" && current.Status != "completed") {
+		return Detail{}, ErrConflict
 	}
 	var count int
 	if err := tx.QueryRow(ctx, "SELECT count(*) FROM task_goals WHERE task_id=$1", taskID).Scan(&count); err != nil {
@@ -58,8 +65,13 @@ func (s Store) AddGoal(ctx context.Context, orgID, actorID, taskID string, versi
 	if _, err := tx.Exec(ctx, "INSERT INTO exploration_edges(task_id,from_node_id,to_node_id,kind) VALUES($1,$2,$3,'derived_from')", taskID, originID, id); err != nil {
 		return Detail{}, err
 	}
-	if _, err := tx.Exec(ctx, "UPDATE tasks SET version=version+1,updated_at=now() WHERE id=$1", taskID); err != nil {
+	if _, err := tx.Exec(ctx, "UPDATE tasks SET status=CASE WHEN status='completed' THEN 'queued' ELSE status END,version=version+1,updated_at=now() WHERE id=$1", taskID); err != nil {
 		return Detail{}, err
+	}
+	if current.Status == "completed" {
+		if _, err := tx.Exec(ctx, `INSERT INTO planner_wakes(task_id,due_at,reason) VALUES($1,now(),'goal.added') ON CONFLICT(task_id) DO UPDATE SET pending=true,due_at=now(),reason='goal.added',updated_at=now()`, taskID); err != nil {
+			return Detail{}, err
+		}
 	}
 	if err := emit(ctx, tx, orgID, taskID, "goal.added", map[string]any{"goal_id": id, "text": input.Text}); err != nil {
 		return Detail{}, err

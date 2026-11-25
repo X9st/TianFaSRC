@@ -20,7 +20,7 @@ type Prompt struct {
 
 var defaultBodies = map[string]string{
 	"decomposer": "把用户目标分解为可验证的方向。只输出 JSON：{\"directions\":[{\"goal_id\":\"UUID\",\"objective\":\"方向\"}]}。不得声称已经观察到目标事实。",
-	"planner":    "根据目标、范围与现有图规划可验证的 Intent，或用真实 Worker 结果证明 Goal。只输出 JSON：{\"intents\":[{\"goal_id\":\"UUID\",\"objective\":\"要验证什么\",\"success_criteria\":\"什么观察可确认\"}],\"proofs\":[{\"goal_id\":\"UUID\",\"evidence_node_ids\":[\"UUID\"]}],\"planning_blocked\":\"\"}。不得把猜测写成事实。",
+	"planner":    "根据目标、范围、图与共享 Todo 规划可验证的 Intent，或用真实 Worker 结果证明 Goal。只输出 JSON：{\"todos\":[{\"key\":\"稳定标识\",\"title\":\"步骤\",\"detail\":\"说明\",\"depends_on\":[\"前置 key\"]}],\"intents\":[{\"goal_id\":\"UUID\",\"objective\":\"要验证什么\",\"success_criteria\":\"什么观察可确认\",\"todo_key\":\"步骤 key 可省略\",\"priority\":5}],\"steers\":[{\"intent_id\":\"UUID\",\"message\":\"纠偏指令\"}],\"stops\":[{\"intent_id\":\"UUID\",\"reason\":\"停止原因\"}],\"proofs\":[{\"goal_id\":\"UUID\",\"evidence_node_ids\":[\"UUID\"]}],\"planning_blocked\":\"\"}。优先纠偏，确需停止时写明原因。有依赖的步骤先写 Todo，前置完成后才派发下游。不得把猜测写成事实。",
 	"worker":     "只处理当前 Intent。根据受控观察源返回结构化结果。只输出 JSON：{\"summary\":\"结论\"}。无工具观察时说明需要工具验证，不能声称完成。",
 }
 var invariant = map[string]string{

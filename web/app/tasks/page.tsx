@@ -48,11 +48,14 @@ const statusName: Record<string, string> = {
   cancelled: "已取消",
 };
 type ModelOption = { id: string; name: string; model: string; enabled: boolean };
-type Intent = { id: string; objective: string; success_criteria: string; status: string; blocking_reason?: string };
+type Intent = { id: string; objective: string; success_criteria: string; status: string; blocking_reason?: string; stop_reason?: string; attempt: number; priority: number };
+type Todo = { id: string; title: string; detail: string; status: string; depends_on: string[]; intent_id?: string };
+type TraceHit = { run_id: string; intent_id: string; ordinal: number; role: string; excerpt: string; created_at: string };
 type AgentRun = { id: string; role: string; status: string; prompt_version: number; error_class?: string; started_at: string };
 type RunDetail = { run: AgentRun; messages: { ordinal: number; role: string; trust_level: string; content: string }[]; attempts: { profile_id: string; status: string; error_class?: string; input_tokens: number; output_tokens: number; estimated: boolean }[] };
 const agentRoles: Record<string,string> = { decomposer: "目标拆解", planner: "规划器", worker: "执行者" };
-const runStatuses: Record<string,string> = { running: "运行中", succeeded: "成功", blocked: "待恢复", failed: "失败" };
+const runStatuses: Record<string,string> = { running: "运行中", succeeded: "成功", blocked: "待恢复", failed: "失败", interrupted: "运行中断", paused: "已暂停", exhausted: "预算耗尽", stopped: "已停止" };
+const intentStatuses: Record<string,string> = { open: "等待领取", leased: "已领取", running: "执行中", done: "已完成", blocked: "待处理", exhausted: "预算耗尽", paused: "已暂停", stopped: "已停止" };
 const modelErrors: Record<string,string> = { model_unavailable: "模型暂时不可用", transport: "连接失败", quota: "配额已用尽", rate_limit: "请求限流", auth: "凭据无效", model_not_found: "模型不存在", stream_interrupted: "响应流中断" };
 
 function parsePorts(value: string): number[] {
@@ -99,6 +102,14 @@ function TaskWorkspace() {
   const [routeRole, setRouteRole] = useState("planner");
   const [intents, setIntents] = useState<Intent[]>([]);
   const [runs, setRuns] = useState<AgentRun[]>([]);
+  const [todos, setTodos] = useState<Todo[]>([]);
+  const [todoTitle, setTodoTitle] = useState("");
+  const [todoDetail, setTodoDetail] = useState("");
+  const [todoDeps, setTodoDeps] = useState<string[]>([]);
+  const [traceQuery, setTraceQuery] = useState("");
+  const [traces, setTraces] = useState<TraceHit[]>([]);
+  const [intentAction, setIntentAction] = useState<{ id: string; name: "steer" | "stop" } | null>(null);
+  const [actionMessage, setActionMessage] = useState("");
   const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
 
   const refresh = useCallback(async () => {
@@ -117,6 +128,7 @@ function TaskWorkspace() {
     setCreating(false);
     setEditingScope(false);
     setRunDetail(null);
+    setIntentAction(null);
     setError("");
     window.history.replaceState(
       null,
@@ -124,7 +136,7 @@ function TaskWorkspace() {
       `/tasks/?id=${encodeURIComponent(id)}`,
     );
     try {
-      const [nextDetail, nextGraph, nextCoverage, nextModels, nextChain, nextDefault, nextRoutes, nextIntents, nextRuns] = await Promise.all([
+      const [nextDetail, nextGraph, nextCoverage, nextModels, nextChain, nextDefault, nextRoutes, nextIntents, nextRuns, nextTodos] = await Promise.all([
         api<Detail>(`/tasks/${id}`),
         api<Graph>(`/tasks/${id}/graph`),
         api<Coverage>(`/tasks/${id}/coverage`),
@@ -134,6 +146,7 @@ function TaskWorkspace() {
         Promise.all(["decomposer","planner","worker"].map((role) => api<{ profiles: string[] }>(`/tasks/${id}/agent-routes/${role}`))),
         api<Intent[]>(`/tasks/${id}/intents`),
         api<AgentRun[]>(`/tasks/${id}/agent-runs`),
+        api<Todo[]>(`/tasks/${id}/todos`),
       ]);
       setDetail(nextDetail);
       setGraph(nextGraph);
@@ -141,6 +154,7 @@ function TaskWorkspace() {
       setModels(nextModels); setTaskChain(nextChain.profiles); setDefaultChain(nextDefault.profiles);
       setAgentRoutes({ decomposer: nextRoutes[0].profiles, planner: nextRoutes[1].profiles, worker: nextRoutes[2].profiles });
       setIntents(nextIntents); setRuns(nextRuns);
+      setTodos(nextTodos);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "加载任务详情失败");
     }
@@ -152,6 +166,21 @@ function TaskWorkspace() {
     if (id) void open(id);
     else if (params.get("new") === "1") setCreating(true);
   }, [refresh, open]);
+
+  useEffect(() => {
+    if (!selected || !detail || !["queued", "running"].includes(detail.task.status)) return;
+    const timer = window.setInterval(() => {
+      void Promise.all([
+        api<Detail>(`/tasks/${selected}`),
+        api<Intent[]>(`/tasks/${selected}/intents`),
+        api<AgentRun[]>(`/tasks/${selected}/agent-runs`),
+        api<Todo[]>(`/tasks/${selected}/todos`),
+      ]).then(([next, nextIntents, nextRuns, nextTodos]) => {
+        setDetail(next); setIntents(nextIntents); setRuns(nextRuns); setTodos(nextTodos);
+      }).catch(() => {});
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [selected, detail?.task.status]);
 
   function resetForm() {
     setTitle("");
@@ -265,6 +294,41 @@ function TaskWorkspace() {
     try { await api(`/tasks/${detail.task.id}:advance`, { method: "POST" }); await open(detail.task.id); }
     catch (cause) { const message = cause instanceof Error ? cause.message : "继续规划失败"; await open(detail.task.id); setError(message); }
     finally { setBusy(false); }
+  }
+  async function command(name: "pause" | "resume" | "cancel") {
+    if (!detail) return;
+    setBusy(true); setError("");
+    try { await api(`/tasks/${detail.task.id}:${name}`, { method: "POST" }); await open(detail.task.id); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "操作失败"); }
+    finally { setBusy(false); }
+  }
+  async function intentCommand(id: string, name: "steer" | "stop" | "retry") {
+    if (!detail) return;
+    const message = actionMessage.trim();
+    if (name !== "retry" && !message) return;
+    setBusy(true); setError("");
+    try { await api(`/tasks/${detail.task.id}/intents/${id}:${name}`, { method: "POST", ...(name === "retry" ? {} : { body: JSON.stringify(name === "steer" ? { message } : { reason: message }) }) }); setIntentAction(null); setActionMessage(""); await open(detail.task.id); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "方向操作失败"); }
+    finally { setBusy(false); }
+  }
+  async function addTodo() {
+    if (!detail || !todoTitle.trim()) return;
+    setBusy(true); setError("");
+    try { await api(`/tasks/${detail.task.id}/todos`, { method: "POST", body: JSON.stringify({ title: todoTitle.trim(), detail: todoDetail.trim(), depends_on: todoDeps }) }); setTodoTitle(""); setTodoDetail(""); setTodoDeps([]); await open(detail.task.id); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "添加步骤失败"); }
+    finally { setBusy(false); }
+  }
+  async function completeTodo(id: string) {
+    if (!detail) return;
+    setBusy(true); setError("");
+    try { await api(`/tasks/${detail.task.id}/todos/${id}:complete`, { method: "POST" }); await open(detail.task.id); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "完成步骤失败"); }
+    finally { setBusy(false); }
+  }
+  async function searchTraces() {
+    if (!detail) return;
+    try { setTraces(await api<TraceHit[]>(`/tasks/${detail.task.id}/worker-traces?q=${encodeURIComponent(traceQuery.trim())}&limit=30`)); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "搜索记录失败"); }
   }
   async function showRun(id: string) {
     try { setRunDetail(await api<RunDetail>(`/agent-runs/${id}`)); }
@@ -534,16 +598,17 @@ function TaskWorkspace() {
                     {new Date(detail.task.created_at).toLocaleString("zh-CN")}
                   </span>
                 </div>
-                <div className="form-hint">启动后会先拆解目标并创建待验证 Intent。真实工具接入前，执行者会标记为等待工具验证。</div>
+                <div className="form-hint">启动后进入持久队列，页面会自动刷新进度。真实工具接入前，验证方向会停在待处理状态。</div>
                 {detail.task.status === "draft" && <button
                   type="button"
                   className="workspace-secondary"
                   onClick={() => void start()}
                   disabled={busy}
                 >
-                  {busy ? "正在规划…" : "启动目标规划"}
+                  {busy ? "正在排队…" : "启动任务"}
                 </button>}
-                {detail.task.status === "running" && <button type="button" className="workspace-secondary" disabled={busy} onClick={() => void advance()}>{busy ? "正在继续…" : "继续待验证方向"}</button>}
+                {detail.task.status === "running" && <div className="workspace-actions"><button type="button" className="workspace-secondary" disabled={busy} onClick={() => void advance()}>唤醒规划器</button><button type="button" className="workspace-secondary" disabled={busy} onClick={() => void command("pause")}>暂停任务</button><button type="button" className="text-button" disabled={busy} onClick={() => void command("cancel")}>取消任务</button></div>}
+                {detail.task.status === "paused" && <div className="workspace-actions"><button type="button" className="workspace-secondary" disabled={busy} onClick={() => void command("resume")}>恢复任务</button><button type="button" className="text-button" disabled={busy} onClick={() => void command("cancel")}>取消任务</button></div>}
               </section>
               <section className="workspace-card">
                 <div className="section-row"><div><h2>任务模型链</h2><p>留空继承系统默认链。明确设置时按列表顺序尝试。</p></div></div>
@@ -558,7 +623,26 @@ function TaskWorkspace() {
                 {agentRoutes[routeRole]?.length ? <ol className="model-chain-list">{agentRoutes[routeRole].map((id,index) => <li key={id}><span className="model-order">{index + 1}</span><strong>{models.find((item) => item.id === id)?.name || id}</strong>{detail.task.status === "draft" && <button type="button" className="text-button" onClick={() => setAgentRoutes({ ...agentRoutes, [routeRole]: agentRoutes[routeRole].filter((value) => value !== id) })}>移除</button>}</li>)}</ol> : <p className="muted">继承任务主备链</p>}
                 {detail.task.status === "draft" && <button type="button" className="workspace-secondary" disabled={busy} onClick={() => void saveAgentRoute()}>保存角色子链</button>}
               </section>
-              {(intents.length > 0 || runs.length > 0) && <section className="workspace-card"><h2>Agent 运行与验证方向</h2><p>模型规划和真实观察分开记录。</p><div className="simple-list">{intents.map((item) => <div key={item.id}><span className="state-tag subtle">{item.status === "blocked" ? "待工具验证" : item.status}</span><strong>{item.objective}</strong><small>{item.blocking_reason || item.success_criteria}</small></div>)}</div><div className="simple-list">{runs.map((item) => <div key={item.id}><span className="state-tag subtle">{runStatuses[item.status] || item.status}</span><strong>{agentRoles[item.role] || item.role} · Prompt v{item.prompt_version}</strong><small>{item.error_class ? (modelErrors[item.error_class] || item.error_class) : new Date(item.started_at).toLocaleString("zh-CN")}</small><button type="button" className="text-button" onClick={() => void showRun(item.id)}>查看记录</button></div>)}</div>{runDetail && <div className="run-transcript"><div className="section-row"><h3>{agentRoles[runDetail.run.role] || runDetail.run.role} 运行记录</h3><button type="button" className="text-button" onClick={() => setRunDetail(null)}>收起</button></div><p>模型尝试：{runDetail.attempts.map((item) => `${runStatuses[item.status] || item.status}${item.error_class ? ` (${modelErrors[item.error_class] || item.error_class})` : ""} · ${item.input_tokens}/${item.output_tokens} Token${item.estimated ? "（估算）" : ""}`).join("；") || "暂无"}</p>{runDetail.messages.map((item) => <div key={item.ordinal}><strong>{item.role}{item.trust_level === "untrusted_observation" ? " · 不可信观察" : ""}</strong><pre>{item.content}</pre></div>)}</div>}</section>}
+              <section className="workspace-card">
+                <h2>共享步骤</h2><p>按依赖顺序完成验证步骤；前置步骤未完成时，下游方向不会领取。</p>
+                <div className="simple-list">{todos.map((item) => <div key={item.id}><span className="state-tag subtle">{item.status === "done" ? "已完成" : "待完成"}</span><strong>{item.title}</strong>{item.detail && <small>{item.detail}</small>}{item.depends_on.length > 0 && <small>前置步骤：{item.depends_on.map((id) => todos.find((entry) => entry.id === id)?.title || id).join("、")}</small>}{item.status === "open" && !item.intent_id && item.depends_on.every((id) => todos.find((entry) => entry.id === id)?.status === "done") && <button type="button" className="text-button" disabled={busy} onClick={() => void completeTodo(item.id)}>标记完成</button>}</div>)}</div>
+                {["draft","queued","running","paused"].includes(detail.task.status) && <div className="workspace-form"><label>新步骤<input value={todoTitle} onChange={(event) => setTodoTitle(event.target.value)} placeholder="例如：验证授权站点首页" maxLength={300} /></label><label>说明<input value={todoDetail} onChange={(event) => setTodoDetail(event.target.value)} placeholder="可选：完成判据或上下文" maxLength={4000} /></label>{todos.filter((item) => item.status === "open").length > 0 && <label>依赖步骤<select aria-label="选择依赖步骤" value="" onChange={(event) => { if (event.target.value && !todoDeps.includes(event.target.value)) setTodoDeps([...todoDeps,event.target.value]); }}><option value="">选择后添加依赖</option>{todos.filter((item) => !todoDeps.includes(item.id)).map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>}{todoDeps.length > 0 && <small>已选：{todoDeps.map((id) => todos.find((entry) => entry.id === id)?.title || id).join("、")} <button type="button" className="text-button" onClick={() => setTodoDeps([])}>清空</button></small>}<button type="button" className="workspace-secondary" disabled={busy || !todoTitle.trim()} onClick={() => void addTodo()}>添加步骤</button></div>}
+              </section>
+              {(intents.length > 0 || runs.length > 0) && <section className="workspace-card">
+                <h2>Agent 运行与验证方向</h2><p>模型规划和真实观察分开记录。</p>
+                <div className="simple-list">{intents.map((item) => <div key={item.id}>
+                  <span className="state-tag subtle">{intentStatuses[item.status] || item.status}</span><strong>{item.objective}</strong><small>{item.blocking_reason || item.stop_reason || item.success_criteria}</small><small>优先级 {item.priority} · 尝试 {item.attempt} 次</small>
+                  <div className="workspace-actions">
+                    {["open","leased","running","blocked"].includes(item.status) && <button type="button" className="text-button" disabled={busy} onClick={() => { setIntentAction({ id: item.id, name: "steer" }); setActionMessage(""); }}>纠偏</button>}
+                    {["open","leased","running","blocked","exhausted","paused"].includes(item.status) && <button type="button" className="text-button" disabled={busy} onClick={() => { setIntentAction({ id: item.id, name: "stop" }); setActionMessage(""); }}>停止</button>}
+                    {["blocked","exhausted","stopped"].includes(item.status) && detail.task.status === "running" && <button type="button" className="text-button" disabled={busy} onClick={() => void intentCommand(item.id,"retry")}>重新运行</button>}
+                  </div>
+                </div>)}</div>
+                {intentAction && <div className="run-transcript"><h3>{intentAction.name === "steer" ? "纠偏执行者" : "停止执行方向"}</h3><p>{intentAction.name === "steer" ? "此指令会在下一次模型动作前加入上下文。" : "请说明停止原因，便于后续审计。"}</p><textarea aria-label={intentAction.name === "steer" ? "纠偏指令" : "停止原因"} value={actionMessage} onChange={(event) => setActionMessage(event.target.value)} maxLength={4000} rows={3} placeholder={intentAction.name === "steer" ? "例如：先验证授权域名的响应，不要扩展范围" : "例如：该方向与现有结果重复"} /><div className="workspace-actions"><button type="button" className="workspace-secondary" disabled={busy || !actionMessage.trim()} onClick={() => void intentCommand(intentAction.id,intentAction.name)}>确认</button><button type="button" className="text-button" onClick={() => setIntentAction(null)}>取消</button></div></div>}
+                <div className="simple-list">{runs.map((item) => <div key={item.id}><span className="state-tag subtle">{runStatuses[item.status] || item.status}</span><strong>{agentRoles[item.role] || item.role} · Prompt v{item.prompt_version}</strong><small>{item.error_class ? (modelErrors[item.error_class] || item.error_class) : new Date(item.started_at).toLocaleString("zh-CN")}</small><button type="button" className="text-button" onClick={() => void showRun(item.id)}>查看记录</button></div>)}</div>
+                {runDetail && <div className="run-transcript"><div className="section-row"><h3>{agentRoles[runDetail.run.role] || runDetail.run.role} 运行记录</h3><button type="button" className="text-button" onClick={() => setRunDetail(null)}>收起</button></div><p>模型尝试：{runDetail.attempts.map((item) => `${runStatuses[item.status] || item.status}${item.error_class ? ` (${modelErrors[item.error_class] || item.error_class})` : ""} · ${item.input_tokens}/${item.output_tokens} Token${item.estimated ? "（估算）" : ""}`).join("；") || "暂无"}</p>{runDetail.messages.map((item) => <div key={item.ordinal}><strong>{item.role}{item.trust_level === "untrusted_observation" ? " · 不可信观察" : ""}</strong><pre>{item.content}</pre></div>)}</div>}
+              </section>}
+              <section className="workspace-card"><h2>执行记录搜索</h2><p>搜索本任务已持久化的执行者消息，点击结果可查看完整记录。</p><div className="workspace-actions"><input aria-label="搜索执行记录" value={traceQuery} onChange={(event) => setTraceQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchTraces(); }} placeholder="输入关键词" maxLength={200} /><button type="button" className="workspace-secondary" onClick={() => void searchTraces()}>搜索</button></div><div className="simple-list">{traces.map((hit) => <div key={`${hit.run_id}-${hit.ordinal}`}><strong>{hit.role} · {new Date(hit.created_at).toLocaleString("zh-CN")}</strong><small>{hit.excerpt}</small><button type="button" className="text-button" onClick={() => void showRun(hit.run_id)}>查看完整记录</button></div>)}</div></section>
               <section className="workspace-card">
                 <div className="section-row">
                   <div>
@@ -574,7 +658,8 @@ function TaskWorkspace() {
                     </div>
                   ))}
                 </div>
-                {detail.task.status === "draft" && (
+                {detail.task.status === "completed" && <p className="form-hint">添加新目标会重新排队，保留此前的运行与证据。</p>}
+                {["draft","completed"].includes(detail.task.status) && (
                   <form
                     className="inline-add-form"
                     onSubmit={(event) => void addItem("goals", newGoal, event)}

@@ -1742,3 +1742,8 @@ button:disabled {
 .run-transcript { border-top: 1px solid #dbe4ed; margin-top: 18px; padding-top: 14px; }
 .run-transcript > div:not(.section-row) { background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 10px; margin-top: 10px; padding: 12px; }
 .run-transcript pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto; font: inherit; font-size: 13px; line-height: 1.55; margin: 7px 0 0; }
+.workspace-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 12px; }
+.workspace-actions > input { flex: 1 1 220px; width: auto; }
+.workspace-form { display: grid; gap: 12px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.workspace-form > button { justify-self: start; }
+.workspace-form small { color: var(--muted); }
