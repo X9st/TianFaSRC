@@ -18,7 +18,7 @@ var (
 	ErrNotFound         = errors.New("task not found")
 	ErrConflict         = errors.New("task version conflict")
 	ErrInvalid          = errors.New("invalid task input")
-	ErrModelUnavailable = errors.New("no model profile is configured; configure model routing in Phase 2 before starting")
+	ErrModelUnavailable = errors.New("请先配置系统默认主备链或任务模型链，并启用至少一个模型 Profile")
 )
 
 type GoalInput struct {
@@ -154,8 +154,8 @@ func (s Store) Create(ctx context.Context, orgID, actorID string, input CreateIn
 	if n := utf8.RuneCountInString(input.Title); n < 1 || n > 200 || utf8.RuneCountInString(input.Description) > 20000 || len(input.Goals) < 1 || len(input.Goals) > 50 {
 		return Detail{}, ErrInvalid
 	}
-	if len(input.LLMProfileChain) > 0 {
-		return Detail{}, ErrModelUnavailable
+	if len(input.LLMProfileChain) > 20 {
+		return Detail{}, ErrInvalid
 	}
 	if input.Execution.PolicyMode == "" {
 		input.Execution.PolicyMode = "autonomous"
@@ -248,6 +248,20 @@ func (s Store) Create(ctx context.Context, orgID, actorID string, input CreateIn
 	}
 	for _, constraint := range input.Constraints {
 		if _, err := tx.Exec(ctx, `INSERT INTO task_constraints(id,task_id,effect,text,source) VALUES($1,$2,$3,$4,'user')`, identity.NewID(), id, constraint.Effect, strings.TrimSpace(constraint.Text)); err != nil {
+			return Detail{}, err
+		}
+	}
+	seenProfiles := map[string]bool{}
+	for position, profileID := range input.LLMProfileChain {
+		if seenProfiles[profileID] {
+			return Detail{}, ErrInvalid
+		}
+		seenProfiles[profileID] = true
+		var available bool
+		if err := tx.QueryRow(ctx, `SELECT enabled AND credential_ref IS NOT NULL FROM llm_profiles WHERE id=$1 AND organization_id=$2`, profileID, orgID).Scan(&available); err != nil || !available {
+			return Detail{}, ErrInvalid
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO task_llm_chain(task_id,position,profile_id) VALUES($1,$2,$3)`, id, position, profileID); err != nil {
 			return Detail{}, err
 		}
 	}

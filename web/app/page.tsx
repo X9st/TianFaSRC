@@ -40,7 +40,7 @@ const navigation = [
 ];
 
 const systemNavigation = [
-  { label: "模型与 Agent", icon: Sparkles, phase: "Phase 2" },
+  { label: "模型与 Agent", icon: Sparkles, href: "/models/" },
   { label: "工具与 Skill", icon: TerminalSquare, phase: "Phase 4" },
   { label: "用户管理", icon: Settings2, href: "/users/" },
 ];
@@ -299,7 +299,8 @@ export default function Dashboard() {
                 number="03"
                 title="配置模型路由"
                 description="设置主备 Profile，任务才会被允许启动。"
-                phase="Phase 2"
+                action="前往配置"
+                href="/models/"
               />
             </ol>
           </section>
@@ -336,7 +337,7 @@ export default function Dashboard() {
               <div>
                 <ShieldCheck size={17} />
                 <span>
-                  <strong>程序化范围</strong>所有真实工具共享同一策略边界
+                  <strong>授权范围</strong>目标工具接入后统一执行策略校验
                 </span>
               </div>
               <div>
@@ -351,7 +352,7 @@ export default function Dashboard() {
 
         <footer className="footer">
           <span>天罚 · 授权安全验证平台</span>
-          <span>Phase 1 / 身份、任务与双图</span>
+          <span>Phase 2 / 模型与 Agent Runtime</span>
         </footer>
       </main>
     </div>
@@ -462,7 +463,7 @@ function SetupStep({
         <p>{description}</p>
       </div>
       {action && href && (
-        <a href={href} target="_blank" rel="noreferrer">
+        <a href={href} target={href.startsWith("http") ? "_blank" : undefined} rel={href.startsWith("http") ? "noreferrer" : undefined}>
           {action}
           <ArrowRight size={14} />
         </a>

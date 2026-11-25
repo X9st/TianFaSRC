@@ -5,6 +5,7 @@ import {
   Boxes,
   LayoutDashboard,
   LogOut,
+  Sparkles,
   ShieldCheck,
   Users,
 } from "lucide-react";
@@ -15,7 +16,7 @@ export default function WorkspaceShell({
   section,
   children,
 }: {
-  section: "tasks" | "assets" | "users";
+  section: "tasks" | "assets" | "users" | "models";
   children: React.ReactNode;
 }) {
   const [user, setUser] = useState<User | null>(null);
@@ -68,6 +69,10 @@ export default function WorkspaceShell({
           >
             <Boxes size={18} />
             全局资产
+          </a>
+          <a href="/models/" className={section === "models" ? "selected" : ""} aria-current={section === "models" ? "page" : undefined}>
+            <Sparkles size={18} />
+            模型与 Agent
           </a>
           {user?.role === "admin" && (
             <a

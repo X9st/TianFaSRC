@@ -47,6 +47,13 @@ const statusName: Record<string, string> = {
   failed: "失败",
   cancelled: "已取消",
 };
+type ModelOption = { id: string; name: string; model: string; enabled: boolean };
+type Intent = { id: string; objective: string; success_criteria: string; status: string; blocking_reason?: string };
+type AgentRun = { id: string; role: string; status: string; prompt_version: number; error_class?: string; started_at: string };
+type RunDetail = { run: AgentRun; messages: { ordinal: number; role: string; trust_level: string; content: string }[]; attempts: { profile_id: string; status: string; error_class?: string; input_tokens: number; output_tokens: number; estimated: boolean }[] };
+const agentRoles: Record<string,string> = { decomposer: "目标拆解", planner: "规划器", worker: "执行者" };
+const runStatuses: Record<string,string> = { running: "运行中", succeeded: "成功", blocked: "待恢复", failed: "失败" };
+const modelErrors: Record<string,string> = { model_unavailable: "模型暂时不可用", transport: "连接失败", quota: "配额已用尽", rate_limit: "请求限流", auth: "凭据无效", model_not_found: "模型不存在", stream_interrupted: "响应流中断" };
 
 function parsePorts(value: string): number[] {
   return value
@@ -85,6 +92,14 @@ function TaskWorkspace() {
   const [policyMode, setPolicyMode] = useState("autonomous");
   const [editingScope, setEditingScope] = useState(false);
   const [editScope, setEditScope] = useState<ScopeDraft[]>([]);
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [taskChain, setTaskChain] = useState<string[]>([]);
+  const [defaultChain, setDefaultChain] = useState<string[]>([]);
+  const [agentRoutes, setAgentRoutes] = useState<Record<string,string[]>>({ decomposer: [], planner: [], worker: [] });
+  const [routeRole, setRouteRole] = useState("planner");
+  const [intents, setIntents] = useState<Intent[]>([]);
+  const [runs, setRuns] = useState<AgentRun[]>([]);
+  const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -101,6 +116,7 @@ function TaskWorkspace() {
     setSelected(id);
     setCreating(false);
     setEditingScope(false);
+    setRunDetail(null);
     setError("");
     window.history.replaceState(
       null,
@@ -108,14 +124,23 @@ function TaskWorkspace() {
       `/tasks/?id=${encodeURIComponent(id)}`,
     );
     try {
-      const [nextDetail, nextGraph, nextCoverage] = await Promise.all([
+      const [nextDetail, nextGraph, nextCoverage, nextModels, nextChain, nextDefault, nextRoutes, nextIntents, nextRuns] = await Promise.all([
         api<Detail>(`/tasks/${id}`),
         api<Graph>(`/tasks/${id}/graph`),
         api<Coverage>(`/tasks/${id}/coverage`),
+        api<ModelOption[]>("/llm-profiles"),
+        api<{ profiles: string[] }>(`/tasks/${id}/llm-chain`),
+        api<{ profiles: string[] }>("/llm-default-chain"),
+        Promise.all(["decomposer","planner","worker"].map((role) => api<{ profiles: string[] }>(`/tasks/${id}/agent-routes/${role}`))),
+        api<Intent[]>(`/tasks/${id}/intents`),
+        api<AgentRun[]>(`/tasks/${id}/agent-runs`),
       ]);
       setDetail(nextDetail);
       setGraph(nextGraph);
       setCoverage(nextCoverage);
+      setModels(nextModels); setTaskChain(nextChain.profiles); setDefaultChain(nextDefault.profiles);
+      setAgentRoutes({ decomposer: nextRoutes[0].profiles, planner: nextRoutes[1].profiles, worker: nextRoutes[2].profiles });
+      setIntents(nextIntents); setRuns(nextRuns);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "加载任务详情失败");
     }
@@ -225,11 +250,41 @@ function TaskWorkspace() {
         method: "POST",
         body: JSON.stringify({ version: detail.task.version }),
       });
+      await open(detail.task.id);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "启动失败");
+      const message = cause instanceof Error ? cause.message : "启动失败";
+      await open(detail.task.id);
+      setError(message);
     } finally {
       setBusy(false);
     }
+  }
+  async function advance() {
+    if (!detail) return;
+    setBusy(true); setError("");
+    try { await api(`/tasks/${detail.task.id}:advance`, { method: "POST" }); await open(detail.task.id); }
+    catch (cause) { const message = cause instanceof Error ? cause.message : "继续规划失败"; await open(detail.task.id); setError(message); }
+    finally { setBusy(false); }
+  }
+  async function showRun(id: string) {
+    try { setRunDetail(await api<RunDetail>(`/agent-runs/${id}`)); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "读取运行记录失败"); }
+  }
+  async function saveTaskChain() {
+    if (!detail) return;
+    setBusy(true); setError("");
+    try {
+      await api(`/tasks/${detail.task.id}/llm-chain`, { method: "PUT", body: JSON.stringify({ profiles: taskChain }) });
+      await open(detail.task.id);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "保存任务模型链失败"); }
+    finally { setBusy(false); }
+  }
+  async function saveAgentRoute() {
+    if (!detail) return;
+    setBusy(true); setError("");
+    try { await api(`/tasks/${detail.task.id}/agent-routes/${routeRole}`, { method: "PUT", body: JSON.stringify({ profiles: agentRoutes[routeRole] || [] }) }); await open(detail.task.id); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "保存角色子链失败"); }
+    finally { setBusy(false); }
   }
   async function addItem(
     kind: "goals" | "constraints",
@@ -441,7 +496,7 @@ function TaskWorkspace() {
               </label>
             </div>
             <div className="form-hint">
-              任务会先保存为草稿。模型路由在 Phase 2 配置后才能启动。
+              任务会先保存为草稿。启动前可在详情页选择模型链；留空则使用系统默认链。
             </div>
           </section>
           <div className="form-actions">
@@ -479,18 +534,31 @@ function TaskWorkspace() {
                     {new Date(detail.task.created_at).toLocaleString("zh-CN")}
                   </span>
                 </div>
-                <div className="form-hint">
-                  当前阶段可编辑草稿并检查血缘。启动需要 Phase 2 的模型路由。
-                </div>
-                <button
+                <div className="form-hint">启动后会先拆解目标并创建待验证 Intent。真实工具接入前，执行者会标记为等待工具验证。</div>
+                {detail.task.status === "draft" && <button
                   type="button"
                   className="workspace-secondary"
                   onClick={() => void start()}
                   disabled={busy}
                 >
-                  检查启动条件
-                </button>
+                  {busy ? "正在规划…" : "启动目标规划"}
+                </button>}
+                {detail.task.status === "running" && <button type="button" className="workspace-secondary" disabled={busy} onClick={() => void advance()}>{busy ? "正在继续…" : "继续待验证方向"}</button>}
               </section>
+              <section className="workspace-card">
+                <div className="section-row"><div><h2>任务模型链</h2><p>留空继承系统默认链。明确设置时按列表顺序尝试。</p></div></div>
+                {detail.task.status === "draft" ? <div className="model-chain-add"><select aria-label="添加任务模型" id="task-chain-profile" defaultValue=""><option value="">选择模型</option>{models.filter((item) => item.enabled && !taskChain.includes(item.id)).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.model}</option>)}</select><button type="button" className="workspace-secondary" onClick={() => { const element = document.getElementById("task-chain-profile") as HTMLSelectElement; if (element.value) { setTaskChain([...taskChain, element.value]); element.value = ""; } }}>加入</button></div> : null}
+                {taskChain.length ? <ol className="model-chain-list">{taskChain.map((id, index) => <li key={id}><span className="model-order">{index + 1}</span><strong>{models.find((item) => item.id === id)?.name || id}</strong>{detail.task.status === "draft" && <button type="button" className="text-button" onClick={() => setTaskChain(taskChain.filter((value) => value !== id))}>移除</button>}</li>)}</ol> : <p className="muted">使用系统默认主备链</p>}
+                {detail.task.status === "draft" && <button type="button" className="workspace-secondary" disabled={busy} onClick={() => void saveTaskChain()}>保存模型链</button>}
+              </section>
+              <section className="workspace-card">
+                <div className="section-row"><div><h2>Agent 角色子链</h2><p>从任务链中选择该角色使用的模型；留空继承任务链。</p></div></div>
+                <label className="model-role-picker">角色<select value={routeRole} onChange={(event) => setRouteRole(event.target.value)}><option value="decomposer">目标拆解</option><option value="planner">规划器</option><option value="worker">执行者</option></select></label>
+                {detail.task.status === "draft" && <div className="model-chain-add"><select aria-label="添加角色模型" id="agent-route-profile" defaultValue=""><option value="">选择模型</option>{(taskChain.length ? taskChain : defaultChain).filter((id) => !agentRoutes[routeRole]?.includes(id)).map((id) => { const item = models.find((entry) => entry.id === id); return <option key={id} value={id}>{item?.name || id}</option>; })}</select><button type="button" className="workspace-secondary" onClick={() => { const element = document.getElementById("agent-route-profile") as HTMLSelectElement; if (element.value) { setAgentRoutes({ ...agentRoutes, [routeRole]: [...(agentRoutes[routeRole] || []), element.value] }); element.value = ""; } }}>加入</button></div>}
+                {agentRoutes[routeRole]?.length ? <ol className="model-chain-list">{agentRoutes[routeRole].map((id,index) => <li key={id}><span className="model-order">{index + 1}</span><strong>{models.find((item) => item.id === id)?.name || id}</strong>{detail.task.status === "draft" && <button type="button" className="text-button" onClick={() => setAgentRoutes({ ...agentRoutes, [routeRole]: agentRoutes[routeRole].filter((value) => value !== id) })}>移除</button>}</li>)}</ol> : <p className="muted">继承任务主备链</p>}
+                {detail.task.status === "draft" && <button type="button" className="workspace-secondary" disabled={busy} onClick={() => void saveAgentRoute()}>保存角色子链</button>}
+              </section>
+              {(intents.length > 0 || runs.length > 0) && <section className="workspace-card"><h2>Agent 运行与验证方向</h2><p>模型规划和真实观察分开记录。</p><div className="simple-list">{intents.map((item) => <div key={item.id}><span className="state-tag subtle">{item.status === "blocked" ? "待工具验证" : item.status}</span><strong>{item.objective}</strong><small>{item.blocking_reason || item.success_criteria}</small></div>)}</div><div className="simple-list">{runs.map((item) => <div key={item.id}><span className="state-tag subtle">{runStatuses[item.status] || item.status}</span><strong>{agentRoles[item.role] || item.role} · Prompt v{item.prompt_version}</strong><small>{item.error_class ? (modelErrors[item.error_class] || item.error_class) : new Date(item.started_at).toLocaleString("zh-CN")}</small><button type="button" className="text-button" onClick={() => void showRun(item.id)}>查看记录</button></div>)}</div>{runDetail && <div className="run-transcript"><div className="section-row"><h3>{agentRoles[runDetail.run.role] || runDetail.run.role} 运行记录</h3><button type="button" className="text-button" onClick={() => setRunDetail(null)}>收起</button></div><p>模型尝试：{runDetail.attempts.map((item) => `${runStatuses[item.status] || item.status}${item.error_class ? ` (${modelErrors[item.error_class] || item.error_class})` : ""} · ${item.input_tokens}/${item.output_tokens} Token${item.estimated ? "（估算）" : ""}`).join("；") || "暂无"}</p>{runDetail.messages.map((item) => <div key={item.ordinal}><strong>{item.role}{item.trust_level === "untrusted_observation" ? " · 不可信观察" : ""}</strong><pre>{item.content}</pre></div>)}</div>}</section>}
               <section className="workspace-card">
                 <div className="section-row">
                   <div>

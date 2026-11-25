@@ -13,7 +13,7 @@
 
 验收：空系统可构建并启动；迁移可重复执行；静态前端由同一 Go 进程提供。
 
-## Phase 1 — 身份、任务与双图（当前）
+## Phase 1 — 身份、任务与双图（已验收）
 
 - 单组织初始化、Session/CSRF/RBAC。
 - Task、Goal、Constraint、Scope 聚合与受管状态转换。
@@ -22,13 +22,15 @@
 
 验收证据与 Phase 2 模型链边界见 [phase1-plan.md](phase1-plan.md) 和 [ADR-0002](adr/0002-draft-without-llm-profile.md)。
 
-## Phase 2 — LLM 与 Agent Runtime
+## Phase 2 — LLM 与 Agent Runtime（已验收）
 
 - Secret Store、Profile Chain、限速、计量、熔断与主备切换。
 - Goal Decomposer、Planner、Worker、提示词版本和 Transcript。
 - Fake Provider 驱动可重复的 Plan → Intent → Fact 集成测试。
 
-## Phase 3 — Durable Engine
+详细范围、阶段边界与测试证据见 [phase2-plan.md](phase2-plan.md)。
+
+## Phase 3 — Durable Engine（下一阶段）
 
 - Intent Queue、Lease、调度公平性、暂停恢复、Reconciliation。
 - Todo、事件唤醒、Trace、Steer/Kill、上下文压缩。

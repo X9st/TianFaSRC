@@ -19,6 +19,7 @@ import (
 	"github.com/X9st/TianFaSRC/internal/api"
 	"github.com/X9st/TianFaSRC/internal/auth"
 	"github.com/X9st/TianFaSRC/internal/config"
+	"github.com/X9st/TianFaSRC/internal/secret"
 	"github.com/X9st/TianFaSRC/internal/store/postgres"
 	"github.com/X9st/TianFaSRC/internal/system"
 	"github.com/X9st/TianFaSRC/internal/task"
@@ -39,6 +40,7 @@ func main() {
 	defer stop()
 
 	var pool *pgxpool.Pool
+	var secrets *secret.Store
 	if cfg.DatabaseURL != "" {
 		pool, err = pgxpool.New(rootCtx, cfg.DatabaseURL)
 		if err != nil {
@@ -51,6 +53,21 @@ func main() {
 			os.Exit(1)
 		}
 		logger.Info("database migrations complete")
+		var storedSecrets int
+		if err := pool.QueryRow(rootCtx, `SELECT count(*) FROM secret_values`).Scan(&storedSecrets); err != nil {
+			logger.Error("check secret store", "error", err)
+			os.Exit(1)
+		}
+		if storedSecrets > 0 && !secret.Exists(cfg.DataDir) {
+			logger.Error("master key missing for existing encrypted credentials")
+			os.Exit(1)
+		}
+		secured, err := secret.Open(cfg.DataDir)
+		if err != nil {
+			logger.Error("open secret store", "error", err)
+			os.Exit(1)
+		}
+		secrets = &secured
 		if len(os.Args) > 1 && os.Args[1] == "init-admin" {
 			if err := initAdmin(rootCtx, pool); err != nil {
 				logger.Error("initialize admin", "error", err)
@@ -88,6 +105,7 @@ func main() {
 			Version:   version,
 			Readiness: system.Readiness{Database: readinessDatabase(pool), DataDir: cfg.DataDir},
 			Pool:      pool,
+			Secrets:   secrets,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,

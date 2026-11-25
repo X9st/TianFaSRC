@@ -8,7 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/X9st/TianFaSRC/internal/agent"
 	"github.com/X9st/TianFaSRC/internal/auth"
+	"github.com/X9st/TianFaSRC/internal/llm"
+	"github.com/X9st/TianFaSRC/internal/secret"
 	"github.com/X9st/TianFaSRC/internal/system"
 	"github.com/X9st/TianFaSRC/internal/task"
 	"github.com/X9st/TianFaSRC/internal/webui"
@@ -19,6 +22,7 @@ type Options struct {
 	Version   string
 	Readiness system.Readiness
 	Pool      *pgxpool.Pool
+	Secrets   *secret.Store
 }
 
 const (
@@ -45,7 +49,14 @@ func NewHandler(opts Options) http.Handler {
 		})
 	})
 	if opts.Pool != nil {
-		phase1API{auth: auth.Store{Pool: opts.Pool}, tasks: task.Store{Pool: opts.Pool}}.routes(mux)
+		base := phase1API{auth: auth.Store{Pool: opts.Pool}, tasks: task.Store{Pool: opts.Pool}}
+		if opts.Secrets != nil {
+			profiles := llm.Store{Pool: opts.Pool, Secrets: *opts.Secrets}
+			runtime := &agent.Engine{Pool: opts.Pool, Profiles: profiles, Router: llm.Router{Store: profiles}}
+			base.engine = runtime
+			phase2API{phase1API: base, profiles: profiles}.routes(mux)
+		}
+		base.routes(mux)
 	}
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusNotFound, "route-not-found", "接口不存在", "请求的 API 路由尚未定义")

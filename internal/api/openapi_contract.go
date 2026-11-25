@@ -64,5 +64,6 @@ func OpenAPI() ([]byte, error) {
 		}},
 	}
 	addPhase1OpenAPI(spec)
+	addPhase2OpenAPI(spec)
 	return yaml.Marshal(spec)
 }

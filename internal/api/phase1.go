@@ -12,7 +12,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/X9st/TianFaSRC/internal/agent"
 	"github.com/X9st/TianFaSRC/internal/auth"
+	"github.com/X9st/TianFaSRC/internal/llm"
 	"github.com/X9st/TianFaSRC/internal/task"
 )
 
@@ -20,8 +22,9 @@ const sessionCookie = "tianfa_session"
 const csrfCookie = "tianfa_csrf"
 
 type phase1API struct {
-	auth  auth.Store
-	tasks task.Store
+	auth   auth.Store
+	tasks  task.Store
+	engine *agent.Engine
 }
 
 func (api phase1API) routes(mux *http.ServeMux) {
@@ -37,6 +40,11 @@ func (api phase1API) routes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/v1/tasks/{id}", api.updateTask)
 	mux.HandleFunc("POST /api/v1/tasks/{action}", func(w http.ResponseWriter, r *http.Request) {
 		value := r.PathValue("action")
+		if strings.HasSuffix(value, ":advance") && api.engine != nil {
+			r.SetPathValue("id", strings.TrimSuffix(value, ":advance"))
+			api.advanceTask(w, r)
+			return
+		}
 		if !strings.HasSuffix(value, ":start") {
 			writeProblem(w, r, 404, "route-not-found", "接口不存在", "请求的 API 路由尚未定义")
 			return
@@ -57,6 +65,23 @@ func (api phase1API) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/assets/graph", api.getAssetGraph)
 	mux.HandleFunc("POST /api/v1/assets", api.upsertAsset)
 	mux.HandleFunc("POST /api/v1/tasks/{id}/assets", api.linkAsset)
+}
+
+func (api phase1API) advanceTask(w http.ResponseWriter, r *http.Request) {
+	user, _, ok := api.principal(w, r, "admin", "operator")
+	if !ok {
+		return
+	}
+	if err := api.engine.Advance(r.Context(), user.OrganizationID, user.ID, r.PathValue("id")); err != nil {
+		apiError(w, r, err)
+		return
+	}
+	item, err := api.tasks.Get(r.Context(), user.OrganizationID, r.PathValue("id"))
+	if err != nil {
+		apiError(w, r, err)
+		return
+	}
+	writeData(w, r, 200, item)
 }
 
 func decodeJSON(r *http.Request, dst any) error {
@@ -165,6 +190,20 @@ func (api phase1API) me(w http.ResponseWriter, r *http.Request) {
 }
 
 func apiError(w http.ResponseWriter, r *http.Request, err error) {
+	var blocked *llm.BlockedError
+	if errors.As(err, &blocked) {
+		writeProblem(w, r, 503, "model-blocked", "模型暂时不可用", blocked.Reason)
+		return
+	}
+	var provider *llm.ProviderError
+	if errors.As(err, &provider) {
+		writeProblem(w, r, 502, "model-provider-error", "模型服务异常", provider.Class)
+		return
+	}
+	if errors.Is(err, llm.ErrInvalid) {
+		writeProblem(w, r, 502, "invalid-agent-output", "模型输出无效", "模型返回的数据不符合结构约束，请检查 Profile、提示模板和运行记录")
+		return
+	}
 	if errors.Is(err, auth.ErrInvalidInput) {
 		writeProblem(w, r, 422, "invalid-input", "输入无效", "请检查邮箱、角色及密码长度（至少 12 字节）")
 		return
@@ -245,8 +284,23 @@ func (api phase1API) startTask(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, 400, "invalid-json", "请求格式错误", err.Error())
 		return
 	}
-	if err := api.tasks.Start(r.Context(), user.OrganizationID, r.PathValue("id"), input.Version); err != nil {
+	var err error
+	if api.engine != nil {
+		err = api.engine.Start(r.Context(), user.OrganizationID, user.ID, r.PathValue("id"), input.Version)
+	} else {
+		err = api.tasks.Start(r.Context(), user.OrganizationID, r.PathValue("id"), input.Version)
+	}
+	if err != nil {
 		apiError(w, r, err)
+		return
+	}
+	if api.engine != nil {
+		item, err := api.tasks.Get(r.Context(), user.OrganizationID, r.PathValue("id"))
+		if err != nil {
+			apiError(w, r, err)
+			return
+		}
+		writeData(w, r, 200, item)
 		return
 	}
 }
