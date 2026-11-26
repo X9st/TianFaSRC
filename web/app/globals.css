@@ -1739,6 +1739,21 @@ button:disabled {
 .model-role-picker { display: grid; gap: 7px; margin: 14px 0; max-width: 240px; }
 @media (max-width: 1000px) { .model-layout { grid-template-columns: 1fr; } }
 @media (max-width: 560px) { .model-chain-add { flex-direction: column; } .model-layout { margin-top: 16px; } }
+
+.tool-admin-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
+.tool-admin-grid .workspace-card { min-width: 0; }
+.tool-admin-grid .workspace-form { margin-bottom: 20px; }
+.tool-binding-list > div { display: grid; grid-template-columns: minmax(100px, 0.75fr) minmax(0, 1.5fr) auto; align-items: center; }
+.tool-binding-list strong { overflow-wrap: normal; white-space: nowrap; }
+.tool-binding-list small { margin-left: 0; line-height: 1.4; }
+.tool-binding-list button { white-space: nowrap; }
+.tool-upload { display: inline-flex !important; align-items: center; gap: 9px; padding: 11px 14px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; font-weight: 700; }
+.tool-upload input { display: none; }
+.tool-subitem { margin: 10px 0 0 16px; padding: 10px 0 0 12px; border-left: 2px solid var(--line); display: grid; gap: 4px; }
+.workspace-card details { max-width: 100%; }
+.workspace-card details pre { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #f3f6fa; border-radius: 9px; padding: 12px; font-size: 12px; }
+@media (max-width: 920px) { .tool-admin-grid { grid-template-columns: 1fr; } }
+@media (max-width: 580px) { .tool-binding-list > div { grid-template-columns: minmax(0, 1fr) auto; } .tool-binding-list small { grid-column: 1 / -1; grid-row: 2; } .tool-binding-list button { grid-column: 2; grid-row: 1; } }
 .run-transcript { border-top: 1px solid #dbe4ed; margin-top: 18px; padding-top: 14px; }
 .run-transcript > div:not(.section-row) { background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 10px; margin-top: 10px; padding: 12px; }
 .run-transcript pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto; font: inherit; font-size: 13px; line-height: 1.55; margin: 7px 0 0; }

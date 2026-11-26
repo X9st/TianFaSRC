@@ -4,7 +4,7 @@
 [`全新自主安全验证平台-核心能力实现规格.md`](./全新自主安全验证平台-核心能力实现规格.md)
 为产品事实来源，按 Phase 逐步实现。
 
-当前交付：**Phase 3 — Durable Engine**。持久队列、租约恢复、Planner 事件唤醒、共享 Todo、Trace 与人工控制已可用；真实目标工具和范围强制执行在 Phase 4 接入。
+当前交付：**Phase 4 — Tool、Scope、Skill 与 MCP**。Worker 可调用受控 HTTP、工作区、隔离命令、自定义只读 HTTP 与按 Skill 解锁的 MCP 工具；所有调用记录策略判定和审计。任务预算配置已移除，历史用量继续统计。
 
 ## 本地启动
 
@@ -49,7 +49,9 @@ make dev-web
 `TIANFA_DEV_API_ORIGIN=http://127.0.0.1:18080 make dev-web`。
 初始化管理员的源码开发命令是 `go run ./cmd/server init-admin`。未配置 PostgreSQL 时后端仍可存活，但 `/health/ready` 会返回未就绪。
 
-管理员登录后在 `/models/` 添加模型 Profile 和 API Key，再设置系统默认主备链。相同模型的不同 Key 需分别创建 Profile；任务详情可覆盖主备链，并为目标拆解、规划器、执行者选择链内子链。启动任务会进入持久队列，页面自动刷新进度，并记录 Decomposer、Planner、Intent、Prompt 版本、Transcript 和模型用量。可在任务详情暂停、恢复、取消、纠偏、停止或重试方向，并管理有依赖的共享步骤。真实目标工具尚未接入时，Worker 将 Intent 标为“待工具验证”，不会把模型推断写成确认 Fact。
+管理员登录后在 `/models/` 添加模型 Profile 和 API Key，再设置系统默认主备链。相同模型的不同 Key 需分别创建 Profile；任务详情可覆盖主备链，并为目标拆解、规划器、执行者选择链内子链。启动任务会进入持久队列，页面自动刷新进度，并记录 Decomposer、Planner、Intent、Prompt 版本、Transcript、模型用量与真实 ToolCall。可在任务详情暂停、恢复、取消、纠偏、停止或重试方向，并管理有依赖的共享步骤。管理员在 `/tools/` 配置工具、Skill、MCP 与审批；Worker 仅凭真实工具观察写入确认 Fact。
+
+隔离命令工具需显式配置 `TIANFA_TOOL_IMAGE` 为预装工具的容器镜像，默认不开放。MCP stdio 同样使用本机 Docker 无网络容器。远端 MCP 需由管理员确保其服务端自身的网络出口受控；本平台只能校验传给它的显式目标 URL，详见 [Phase 4 验收记录](docs/phase4-plan.md)。
 
 API Key 使用数据目录 `secrets/master.key` 加密保存，该文件权限为 `0600`；部署备份必须同时保留数据库和此密钥文件。若数据库已存在加密凭据而密钥文件丢失，服务会拒绝启动。生产环境应限制数据目录访问。
 
@@ -65,5 +67,5 @@ OpenAPI 由 Go 契约定义生成：`make openapi` 更新文档，
 `TIANFA_TEST_DATABASE_URL`；CI 中默认运行。
 
 需求追踪和阶段计划见 [docs/requirements-traceability.md](docs/requirements-traceability.md)
-与 [docs/implementation-plan.md](docs/implementation-plan.md)。Phase 3 验收结果见 [docs/phase3-plan.md](docs/phase3-plan.md)。
+与 [docs/implementation-plan.md](docs/implementation-plan.md)。Phase 4 验收结果见 [docs/phase4-plan.md](docs/phase4-plan.md)。
 

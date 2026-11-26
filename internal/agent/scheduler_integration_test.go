@@ -370,14 +370,14 @@ func TestWorkerPriorityAndTaskFairness(t *testing.T) {
 	}
 }
 
-func TestBudgetExhaustionSettlesOpenIntent(t *testing.T) {
+func TestDeadlineSettlesOpenIntent(t *testing.T) {
 	s, _, taskID, intentID := schedulerFixture(t)
 	ctx := context.Background()
-	if _, err := s.Engine.Pool.Exec(ctx, `UPDATE tasks SET budget='{"schema_version":1,"max_tool_calls":0}'::jsonb WHERE id=$1`, taskID); err != nil {
+	if _, err := s.Engine.Pool.Exec(ctx, `UPDATE tasks SET deadline_at=now()-interval '1 second' WHERE id=$1`, taskID); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := s.ClaimWorker(ctx); err != nil || ok {
-		t.Fatalf("claimed over-budget intent: %v %v", ok, err)
+		t.Fatalf("claimed past-deadline intent: %v %v", ok, err)
 	}
 	if _, err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
@@ -386,7 +386,7 @@ func TestBudgetExhaustionSettlesOpenIntent(t *testing.T) {
 	if err := s.Engine.Pool.QueryRow(ctx, `SELECT status,blocking_reason FROM task_intents WHERE id=$1`, intentID).Scan(&status, &reason); err != nil {
 		t.Fatal(err)
 	}
-	if status != "exhausted" || !strings.Contains(reason, "预算") {
+	if status != "exhausted" || !strings.Contains(reason, "截止时间") {
 		t.Fatalf("status=%s reason=%s", status, reason)
 	}
 }
@@ -547,7 +547,7 @@ func TestKilledWorkerProcessRecovers(t *testing.T) {
 	}
 }
 
-func TestConcurrentObservationBudgetReservation(t *testing.T) {
+func TestConcurrentObservationRecording(t *testing.T) {
 	s, _, taskID, _ := schedulerFixture(t)
 	ctx := context.Background()
 	var goalID string
@@ -559,9 +559,6 @@ func TestConcurrentObservationBudgetReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := s.Engine.Pool.Exec(ctx, `INSERT INTO task_intents(id,task_id,goal_id,objective,success_criteria,dedup_key) VALUES($1,$2,$3,'第二方向','受控结果','second')`, id, taskID, goalID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Engine.Pool.Exec(ctx, `UPDATE tasks SET budget='{"schema_version":1,"max_tool_calls":1}'::jsonb WHERE id=$1`, taskID); err != nil {
 		t.Fatal(err)
 	}
 	a, ok, err := s.ClaimWorker(ctx)
@@ -582,18 +579,16 @@ func TestConcurrentObservationBudgetReservation(t *testing.T) {
 	}
 	wg.Wait()
 	close(results)
-	success, budget := 0, 0
+	success := 0
 	for err := range results {
 		if err == nil {
 			success++
-		} else if errors.Is(err, errToolBudget) {
-			budget++
 		} else {
 			t.Fatal(err)
 		}
 	}
-	if success != 1 || budget != 1 || source.calls.Load() != 1 {
-		t.Fatalf("success=%d budget=%d calls=%d", success, budget, source.calls.Load())
+	if success != 2 || source.calls.Load() != 2 {
+		t.Fatalf("success=%d calls=%d", success, source.calls.Load())
 	}
 }
 

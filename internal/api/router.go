@@ -59,6 +59,9 @@ func NewHandler(opts Options) http.Handler {
 			phase2API{phase1API: base, profiles: profiles}.routes(mux)
 			if opts.Scheduler != nil {
 				phase3API{phase1API: base}.routes(mux)
+				if opts.Scheduler.Tools != nil {
+					phase4API{phase1API: base}.routes(mux)
+				}
 			}
 		}
 		base.routes(mux)

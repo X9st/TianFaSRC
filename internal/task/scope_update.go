@@ -55,7 +55,7 @@ func (s Store) ReplaceScope(ctx context.Context, orgID, actorID, id string, vers
 	if err != nil {
 		return Detail{}, err
 	}
-	if current.Version != version || current.Status != "draft" {
+	if current.Version != version || (current.Status != "draft" && current.Status != "running" && current.Status != "paused") {
 		return Detail{}, ErrConflict
 	}
 	next := current.ScopeVersion + 1

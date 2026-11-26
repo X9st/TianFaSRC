@@ -110,7 +110,7 @@ func TestPhase1Flow(t *testing.T) {
 	if csrf == "" {
 		t.Fatal("missing csrf cookie")
 	}
-	input := map[string]any{"title": "授权测试", "description": "仅测试范围内系统", "goals": []any{map[string]any{"text": "验证授权访问", "priority": 8}}, "scope": map[string]any{"entries": []any{map[string]any{"effect": "allow", "kind": "domain", "value": "EXAMPLE.INVALID", "ports": []int{443}}}}, "constraints": []any{map[string]any{"effect": "deny", "text": "禁止压测"}}, "execution": map[string]any{"policy_mode": "autonomous", "worker_limit": 3, "budget": map[string]any{"max_input_tokens": 1000}}}
+	input := map[string]any{"title": "授权测试", "description": "仅测试范围内系统", "goals": []any{map[string]any{"text": "验证授权访问", "priority": 8}}, "scope": map[string]any{"entries": []any{map[string]any{"effect": "allow", "kind": "domain", "value": "EXAMPLE.INVALID", "ports": []int{443}}}}, "constraints": []any{map[string]any{"effect": "deny", "text": "禁止压测"}}, "execution": map[string]any{"policy_mode": "autonomous", "worker_limit": 3}}
 	must(call("POST", "/api/v1/tasks", input, cookies, ""), 403)
 	created := call("POST", "/api/v1/tasks", input, cookies, csrf)
 	must(created, 201)
@@ -128,9 +128,8 @@ func TestPhase1Flow(t *testing.T) {
 	if id == "" || len(data.Data.Scope) != 1 || data.Data.Scope[0].NormalizedValue != "example.invalid" {
 		t.Fatalf("unexpected task: %+v", data)
 	}
-	var budget map[string]any
-	if err := json.Unmarshal(data.Data.Task.Budget, &budget); err != nil || budget["schema_version"] != float64(1) {
-		t.Fatalf("unversioned budget: %s %v", data.Data.Task.Budget, err)
+	if strings.Contains(created.Body.String(), `"budget"`) {
+		t.Fatalf("task response still exposes budget: %s", created.Body.String())
 	}
 	must(call("POST", "/api/v1/tasks/"+id+":start", map[string]any{"version": 1}, cookies, csrf), 409)
 	must(call("PATCH", "/api/v1/tasks/"+id, map[string]any{"title": "已修改", "version": 1}, cookies, csrf), 200)

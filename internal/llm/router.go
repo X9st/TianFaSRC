@@ -66,7 +66,10 @@ func (r Router) Complete(ctx context.Context, orgID, taskID, runID, role string,
 			return Completion{}, err
 		}
 		attemptID := identity.NewID()
-		ordinal := i + 1
+		var ordinal int
+		if err := r.Store.Pool.QueryRow(ctx, `UPDATE agent_runs SET llm_profile_attempt=llm_profile_attempt+1 WHERE id=$1 RETURNING llm_profile_attempt`, runID).Scan(&ordinal); err != nil {
+			return Completion{}, err
+		}
 		if _, err := r.Store.Pool.Exec(ctx, `INSERT INTO llm_attempts(id,run_id,profile_id,ordinal,status) VALUES($1,$2,$3,$4,'running')`, attemptID, runID, p.ID, ordinal); err != nil {
 			return Completion{}, err
 		}
@@ -101,7 +104,7 @@ func (r Router) Complete(ctx context.Context, orgID, taskID, runID, role string,
 			cancel()
 			return Completion{}, err
 		}
-		if _, err := tx.Exec(settleCtx, `UPDATE agent_runs SET profile_id=$2,llm_profile_attempt=$3 WHERE id=$1`, runID, p.ID, ordinal); err != nil {
+		if _, err := tx.Exec(settleCtx, `UPDATE agent_runs SET profile_id=$2 WHERE id=$1`, runID, p.ID); err != nil {
 			_ = tx.Rollback(settleCtx)
 			cancel()
 			return Completion{}, err

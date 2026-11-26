@@ -37,10 +37,12 @@
 
 设计、验收证据与 Phase 4 边界见 [phase3-plan.md](phase3-plan.md)。
 
-## Phase 4 — Tool、Scope、Skill 与 MCP
+## Phase 4 — Tool、Scope、Skill 与 MCP（核心能力已验收）
 
 - Tool 装饰链和真实命令/文件工具。
 - Scope/Policy 强制层、审批、Skill 延迟加载、MCP、自定义 HTTP Tool。
+
+验收证据与安全边界见 [phase4-plan.md](phase4-plan.md)。用户取消任务预算配置的决定见 [ADR-0003](adr/0003-remove-task-budgets.md)。
 
 ## Phase 5 — Traffic、Evidence 与 Finding
 

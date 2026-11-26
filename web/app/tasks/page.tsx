@@ -17,6 +17,7 @@ import {
   type Detail,
   type Graph,
   type Task,
+  type User,
 } from "../../lib/api";
 
 type ScopeDraft = {
@@ -53,10 +54,23 @@ type Todo = { id: string; title: string; detail: string; status: string; depends
 type TraceHit = { run_id: string; intent_id: string; ordinal: number; role: string; excerpt: string; created_at: string };
 type AgentRun = { id: string; role: string; status: string; prompt_version: number; error_class?: string; started_at: string };
 type RunDetail = { run: AgentRun; messages: { ordinal: number; role: string; trust_level: string; content: string }[]; attempts: { profile_id: string; status: string; error_class?: string; input_tokens: number; output_tokens: number; estimated: boolean }[] };
+type ToolCall = { id: string; name: string; input: Record<string, unknown>; status: string; summary?: string; policy_reason?: string; output?: { preview?: string; bytes?: number; remote_ip?: string }; scope_version: number; created_at: string };
+type Approval = { id: string; tool_call_id: string; task_id: string; tool_name: string; status: string; reason?: string; requested_at: string };
 const agentRoles: Record<string,string> = { decomposer: "目标拆解", planner: "规划器", worker: "执行者" };
-const runStatuses: Record<string,string> = { running: "运行中", succeeded: "成功", blocked: "待恢复", failed: "失败", interrupted: "运行中断", paused: "已暂停", exhausted: "预算耗尽", stopped: "已停止" };
-const intentStatuses: Record<string,string> = { open: "等待领取", leased: "已领取", running: "执行中", done: "已完成", blocked: "待处理", exhausted: "预算耗尽", paused: "已暂停", stopped: "已停止" };
+const runStatuses: Record<string,string> = { running: "运行中", succeeded: "成功", blocked: "待恢复", failed: "失败", interrupted: "运行中断", paused: "已暂停", exhausted: "回合或期限已到", stopped: "已停止" };
+const intentStatuses: Record<string,string> = { open: "等待领取", leased: "已领取", running: "执行中", done: "已完成", blocked: "待处理", exhausted: "回合或期限已到", paused: "已暂停", stopped: "已停止" };
 const modelErrors: Record<string,string> = { model_unavailable: "模型暂时不可用", transport: "连接失败", quota: "配额已用尽", rate_limit: "请求限流", auth: "凭据无效", model_not_found: "模型不存在", stream_interrupted: "响应流中断" };
+const toolStatuses: Record<string,string> = { queued: "排队中", policy_check: "等待审批", running: "执行中", succeeded: "成功", failed: "失败", blocked: "策略阻断", cancelled: "已取消" };
+
+function safeToolInput(call: ToolCall): string {
+  if (call.name === "http.read" && typeof call.input.url === "string") {
+    try { const url = new URL(call.input.url); return `${String(call.input.method || "GET")} ${url.origin}${url.pathname}${url.search ? "?参数已隐藏" : ""}`; }
+    catch { return "URL 格式无效"; }
+  }
+  if (call.name.startsWith("workspace.")) return typeof call.input.name === "string" ? `文件：${call.input.name}` : "工作区文件";
+  if (call.name === "command.run") return "隔离命令（参数已隐藏）";
+  return "输入已隐藏";
+}
 
 function parsePorts(value: string): number[] {
   return value
@@ -111,6 +125,11 @@ function TaskWorkspace() {
   const [intentAction, setIntentAction] = useState<{ id: string; name: "steer" | "stop" } | null>(null);
   const [actionMessage, setActionMessage] = useState("");
   const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
+  const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
+  const [toolBindings, setToolBindings] = useState<Record<string, boolean>>({});
+  const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [viewer, setViewer] = useState<User | null>(null);
+  const [approvalReason, setApprovalReason] = useState("");
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -136,7 +155,7 @@ function TaskWorkspace() {
       `/tasks/?id=${encodeURIComponent(id)}`,
     );
     try {
-      const [nextDetail, nextGraph, nextCoverage, nextModels, nextChain, nextDefault, nextRoutes, nextIntents, nextRuns, nextTodos] = await Promise.all([
+      const [nextDetail, nextGraph, nextCoverage, nextModels, nextChain, nextDefault, nextRoutes, nextIntents, nextRuns, nextTodos, nextCalls, nextBindings, nextApprovals] = await Promise.all([
         api<Detail>(`/tasks/${id}`),
         api<Graph>(`/tasks/${id}/graph`),
         api<Coverage>(`/tasks/${id}/coverage`),
@@ -147,6 +166,9 @@ function TaskWorkspace() {
         api<Intent[]>(`/tasks/${id}/intents`),
         api<AgentRun[]>(`/tasks/${id}/agent-runs`),
         api<Todo[]>(`/tasks/${id}/todos`),
+        api<ToolCall[]>(`/tasks/${id}/tool-calls`),
+        api<Record<string, boolean>>("/tools"),
+        api<Approval[]>("/approvals").catch(() => []),
       ]);
       setDetail(nextDetail);
       setGraph(nextGraph);
@@ -155,12 +177,14 @@ function TaskWorkspace() {
       setAgentRoutes({ decomposer: nextRoutes[0].profiles, planner: nextRoutes[1].profiles, worker: nextRoutes[2].profiles });
       setIntents(nextIntents); setRuns(nextRuns);
       setTodos(nextTodos);
+      setToolCalls(nextCalls); setToolBindings(nextBindings); setApprovals(nextApprovals.filter((item) => item.task_id === id));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "加载任务详情失败");
     }
   }, []);
   useEffect(() => {
     void refresh();
+    void api<User>("/me").then(setViewer).catch(() => {});
     const params = new URLSearchParams(window.location.search);
     const id = params.get("id");
     if (id) void open(id);
@@ -175,8 +199,11 @@ function TaskWorkspace() {
         api<Intent[]>(`/tasks/${selected}/intents`),
         api<AgentRun[]>(`/tasks/${selected}/agent-runs`),
         api<Todo[]>(`/tasks/${selected}/todos`),
-      ]).then(([next, nextIntents, nextRuns, nextTodos]) => {
+        api<ToolCall[]>(`/tasks/${selected}/tool-calls`),
+        api<Approval[]>("/approvals").catch(() => []),
+      ]).then(([next, nextIntents, nextRuns, nextTodos, nextCalls, nextApprovals]) => {
         setDetail(next); setIntents(nextIntents); setRuns(nextRuns); setTodos(nextTodos);
+        setToolCalls(nextCalls); setApprovals(nextApprovals.filter((item) => item.task_id === selected));
       }).catch(() => {});
     }, 3000);
     return () => window.clearInterval(timer);
@@ -236,7 +263,6 @@ function TaskWorkspace() {
           execution: {
             policy_mode: policyMode,
             worker_limit: workerLimit,
-            budget: { schema_version: 1 },
           },
         }),
       });
@@ -333,6 +359,25 @@ function TaskWorkspace() {
   async function showRun(id: string) {
     try { setRunDetail(await api<RunDetail>(`/agent-runs/${id}`)); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "读取运行记录失败"); }
+  }
+  async function decideApproval(id: string, approve: boolean) {
+    if (!detail) return;
+    setBusy(true); setError("");
+    try {
+      await api(`/approvals/${id}:${approve ? "approve" : "reject"}`, { method: "POST", body: JSON.stringify({ reason: approvalReason.trim() }) });
+      setApprovalReason("");
+      await open(detail.task.id);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "审批失败"); }
+    finally { setBusy(false); }
+  }
+  async function toggleTool(name: string, enabled: boolean) {
+    if (!detail) return;
+    setBusy(true); setError("");
+    try {
+      await api(`/tools/${encodeURIComponent(name)}/binding`, { method: "PUT", body: JSON.stringify({ enabled }) });
+      setToolBindings({ ...toolBindings, [name]: enabled });
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "工具设置失败"); }
+    finally { setBusy(false); }
   }
   async function saveTaskChain() {
     if (!detail) return;
@@ -522,7 +567,7 @@ function TaskWorkspace() {
               <span className="step-pill">03</span>
               <div>
                 <h2>执行约束</h2>
-                <p>设置禁止事项和后续阶段的运行策略。</p>
+                <p>设置禁止事项、工具审批模式和任务并发上限。</p>
               </div>
             </div>
             <div className="form-grid">
@@ -598,7 +643,7 @@ function TaskWorkspace() {
                     {new Date(detail.task.created_at).toLocaleString("zh-CN")}
                   </span>
                 </div>
-                <div className="form-hint">启动后进入持久队列，页面会自动刷新进度。真实工具接入前，验证方向会停在待处理状态。</div>
+                <div className="form-hint">启动后进入持久队列，页面会自动刷新进度。工具调用会逐次校验授权范围并留下记录。</div>
                 {detail.task.status === "draft" && <button
                   type="button"
                   className="workspace-secondary"
@@ -643,6 +688,20 @@ function TaskWorkspace() {
                 {runDetail && <div className="run-transcript"><div className="section-row"><h3>{agentRoles[runDetail.run.role] || runDetail.run.role} 运行记录</h3><button type="button" className="text-button" onClick={() => setRunDetail(null)}>收起</button></div><p>模型尝试：{runDetail.attempts.map((item) => `${runStatuses[item.status] || item.status}${item.error_class ? ` (${modelErrors[item.error_class] || item.error_class})` : ""} · ${item.input_tokens}/${item.output_tokens} Token${item.estimated ? "（估算）" : ""}`).join("；") || "暂无"}</p>{runDetail.messages.map((item) => <div key={item.ordinal}><strong>{item.role}{item.trust_level === "untrusted_observation" ? " · 不可信观察" : ""}</strong><pre>{item.content}</pre></div>)}</div>}
               </section>}
               <section className="workspace-card"><h2>执行记录搜索</h2><p>搜索本任务已持久化的执行者消息，点击结果可查看完整记录。</p><div className="workspace-actions"><input aria-label="搜索执行记录" value={traceQuery} onChange={(event) => setTraceQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchTraces(); }} placeholder="输入关键词" maxLength={200} /><button type="button" className="workspace-secondary" onClick={() => void searchTraces()}>搜索</button></div><div className="simple-list">{traces.map((hit) => <div key={`${hit.run_id}-${hit.ordinal}`}><strong>{hit.role} · {new Date(hit.created_at).toLocaleString("zh-CN")}</strong><small>{hit.excerpt}</small><button type="button" className="text-button" onClick={() => void showRun(hit.run_id)}>查看完整记录</button></div>)}</div></section>
+              <section className="workspace-card">
+                <div className="section-row"><div><h2>工具调用</h2><p>查看授权判断、执行结果与完整输出。</p></div><span className="state-tag subtle">{toolCalls.length} 次</span></div>
+                {toolCalls.length === 0 ? <p className="empty-small">当前任务还没有工具调用</p> : <div className="simple-list">{toolCalls.map((call) => <div key={call.id}>
+                  <span className={`state-tag ${call.status === "blocked" ? "danger" : "subtle"}`}>{toolStatuses[call.status] || call.status}</span>
+                  <strong>{call.name}</strong><small>{safeToolInput(call)}</small>
+                  <small>Scope v{call.scope_version} · {new Date(call.created_at).toLocaleString("zh-CN")}</small>
+                  {(call.policy_reason || call.summary) && <small>{call.policy_reason || call.summary}</small>}
+                  {call.output?.remote_ip && <small>实际连接 IP：{call.output.remote_ip}</small>}
+                  {call.output?.preview && <details><summary>查看输出片段</summary><pre>{call.output.preview}</pre></details>}
+                  {call.status === "succeeded" && <a className="workspace-link" href={`/api/v1/tool-calls/${call.id}/output`} target="_blank" rel="noopener noreferrer">下载完整输出</a>}
+                </div>)}</div>}
+              </section>
+              {approvals.some((item) => item.status === "pending") && <section className="workspace-card"><h2>待审批工具</h2><p>仅管理员可以批准会写入或执行命令的调用。</p><div className="simple-list">{approvals.filter((item) => item.status === "pending").map((item) => <div key={item.id}><strong>{item.tool_name}</strong><small>工具调用 {item.tool_call_id}</small>{viewer?.role === "admin" && <><input aria-label="审批说明" value={approvalReason} onChange={(event) => setApprovalReason(event.target.value)} placeholder="拒绝时填写原因" maxLength={4000} /><div className="workspace-actions"><button type="button" className="workspace-secondary" disabled={busy} onClick={() => void decideApproval(item.id, true)}>批准</button><button type="button" className="text-button" disabled={busy || !approvalReason.trim()} onClick={() => void decideApproval(item.id, false)}>拒绝</button></div></>}</div>)}</div></section>}
+              {viewer?.role === "admin" && <section className="workspace-card"><h2>Worker 工具</h2><p>关闭后，后续运行无法调用该工具。</p><div className="simple-list">{Object.entries(toolBindings).map(([name, enabled]) => <div key={name}><strong>{name}</strong><button type="button" className="workspace-secondary" disabled={busy} onClick={() => void toggleTool(name, !enabled)}>{enabled ? "已启用 · 点击关闭" : "已关闭 · 点击启用"}</button></div>)}</div></section>}
               <section className="workspace-card">
                 <div className="section-row">
                   <div>
@@ -695,7 +754,7 @@ function TaskWorkspace() {
                       条允许
                     </p>
                   </div>
-                  {detail.task.status === "draft" && (
+                  {["draft", "running", "paused"].includes(detail.task.status) && (
                     <button
                       type="button"
                       className="workspace-secondary"

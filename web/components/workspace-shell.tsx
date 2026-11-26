@@ -8,6 +8,7 @@ import {
   Sparkles,
   ShieldCheck,
   Users,
+  Wrench,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, redirectToLogin, type User } from "../lib/api";
@@ -16,7 +17,7 @@ export default function WorkspaceShell({
   section,
   children,
 }: {
-  section: "tasks" | "assets" | "users" | "models";
+  section: "tasks" | "assets" | "users" | "models" | "tools";
   children: React.ReactNode;
 }) {
   const [user, setUser] = useState<User | null>(null);
@@ -73,6 +74,10 @@ export default function WorkspaceShell({
           <a href="/models/" className={section === "models" ? "selected" : ""} aria-current={section === "models" ? "page" : undefined}>
             <Sparkles size={18} />
             模型与 Agent
+          </a>
+          <a href="/tools/" className={section === "tools" ? "selected" : ""} aria-current={section === "tools" ? "page" : undefined}>
+            <Wrench size={18} />
+            工具与 Skill
           </a>
           {user?.role === "admin" && (
             <a

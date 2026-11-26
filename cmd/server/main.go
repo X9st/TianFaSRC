@@ -25,6 +25,7 @@ import (
 	"github.com/X9st/TianFaSRC/internal/store/postgres"
 	"github.com/X9st/TianFaSRC/internal/system"
 	"github.com/X9st/TianFaSRC/internal/task"
+	"github.com/X9st/TianFaSRC/internal/tool"
 )
 
 var version = "dev"
@@ -72,7 +73,8 @@ func main() {
 		}
 		secrets = &secured
 		profiles := llm.Store{Pool: pool, Secrets: secured}
-		scheduler = &agent.Scheduler{Engine: agent.Engine{Pool: pool, Profiles: profiles, Router: llm.Router{Store: profiles}}, Logger: logger}
+		dispatcher := &tool.Dispatcher{Pool: pool, DataDir: cfg.DataDir, CommandImage: os.Getenv("TIANFA_TOOL_IMAGE")}
+		scheduler = &agent.Scheduler{Engine: agent.Engine{Pool: pool, Profiles: profiles, Router: llm.Router{Store: profiles}}, Tools: dispatcher, Logger: logger}
 		if len(os.Args) > 1 && os.Args[1] == "init-admin" {
 			if err := initAdmin(rootCtx, pool); err != nil {
 				logger.Error("initialize admin", "error", err)

@@ -12,12 +12,11 @@ import (
 	"github.com/X9st/TianFaSRC/internal/identity"
 	"github.com/X9st/TianFaSRC/internal/llm"
 	"github.com/X9st/TianFaSRC/internal/task"
+	"github.com/X9st/TianFaSRC/internal/tool"
 	"github.com/jackc/pgx/v5"
 )
 
 const leaseDuration = 30 * time.Second
-
-var errToolBudget = errors.New("工具调用预算已耗尽")
 
 // IdempotentObservationSource must use key for every external side effect.
 // An implementation must return the original result on a repeated key.
@@ -28,6 +27,7 @@ type IdempotentObservationSource interface {
 type Scheduler struct {
 	Engine       Engine
 	Observations IdempotentObservationSource
+	Tools        *tool.Dispatcher
 	Logger       *slog.Logger
 	OwnerID      string
 }
@@ -201,14 +201,11 @@ func (s Scheduler) ClaimWorker(ctx context.Context) (Claim, bool, error) {
 	}
 	var c Claim
 	err = tx.QueryRow(ctx, `SELECT i.id,i.task_id,t.organization_id,t.created_by,i.objective,i.success_criteria,i.attempt+1,i.observation_generation
- FROM task_intents i JOIN tasks t ON t.id=i.task_id JOIN task_budgets b ON b.task_id=t.id
+ FROM task_intents i JOIN tasks t ON t.id=i.task_id
  WHERE i.status='open' AND i.ready_at<=now() AND t.status='running' AND i.attempt<i.max_attempts
  AND (i.todo_id IS NULL OR EXISTS(SELECT 1 FROM task_todos d WHERE d.id=i.todo_id AND d.status='open'
    AND NOT EXISTS(SELECT 1 FROM unnest(d.depends_on) dep JOIN task_todos p ON p.id=dep WHERE p.status<>'done')))
  AND (t.deadline_at IS NULL OR t.deadline_at>now())
- AND (t.budget->>'max_input_tokens' IS NULL OR b.input_tokens<(t.budget->>'max_input_tokens')::bigint)
- AND (t.budget->>'max_output_tokens' IS NULL OR b.output_tokens<(t.budget->>'max_output_tokens')::bigint)
- AND (t.budget->>'max_tool_calls' IS NULL OR b.tool_calls<(t.budget->>'max_tool_calls')::bigint)
  AND (SELECT count(*) FROM worker_leases l WHERE l.task_id=t.id AND l.expires_at>now())<t.worker_limit
  ORDER BY COALESCE(t.last_worker_dispatch_at,t.created_at),i.priority DESC,i.created_at,i.id
  LIMIT 1 FOR UPDATE OF i,t SKIP LOCKED`).Scan(&c.IntentID, &c.TaskID, &c.OrganizationID, &c.ActorID, &c.Objective, &c.SuccessCriteria, &c.Attempt, &c.ObservationGeneration)
@@ -309,13 +306,13 @@ func (s Scheduler) RunWorker(ctx context.Context, c Claim) error {
 		return s.FinishWorker(workerCtx, c, "paused", "任务已暂停", nil)
 	}
 	if s.Observations == nil {
-		return s.FinishWorker(workerCtx, c, "blocked", "等待真实工具与 Scope/Policy 校验接入后验证", nil)
+		if s.Tools != nil {
+			return s.runWorkerTools(workerCtx, c)
+		}
+		return s.FinishWorker(workerCtx, c, "blocked", "等待受控工具配置后验证", nil)
 	}
 	obs, err := s.observe(workerCtx, c)
 	if err != nil {
-		if errors.Is(err, errToolBudget) {
-			return s.FinishWorker(workerCtx, c, "exhausted", err.Error(), nil)
-		}
 		return s.FinishWorker(workerCtx, c, "blocked", err.Error(), nil)
 	}
 	if !obs.Confirmed || obs.ToolCallID == "" || strings.TrimSpace(obs.Summary) == "" {
@@ -327,7 +324,7 @@ func (s Scheduler) RunWorker(ctx context.Context, c Claim) error {
 	if taskStatus == "paused" || taskStatus == "cancelled" {
 		return s.FinishWorker(workerCtx, c, "paused", "任务已暂停", nil)
 	}
-	if reason, err := s.budgetExhausted(workerCtx, c.TaskID); err != nil {
+	if reason, err := s.deadlineReached(workerCtx, c.TaskID); err != nil {
 		return err
 	} else if reason != "" {
 		return s.FinishWorker(workerCtx, c, "exhausted", reason, &obs)
@@ -355,7 +352,7 @@ func (s Scheduler) RunWorker(ctx context.Context, c Claim) error {
 		}
 		return s.FinishWorker(workerCtx, c, "blocked", err.Error(), nil)
 	}
-	if reason, err := s.budgetExhausted(workerCtx, c.TaskID); err != nil {
+	if reason, err := s.deadlineReached(workerCtx, c.TaskID); err != nil {
 		return err
 	} else if reason != "" {
 		return s.FinishWorker(workerCtx, c, "exhausted", reason, &obs)
@@ -363,9 +360,9 @@ func (s Scheduler) RunWorker(ctx context.Context, c Claim) error {
 	return s.FinishWorker(workerCtx, c, "done", "", &obs)
 }
 
-func (s Scheduler) budgetExhausted(ctx context.Context, taskID string) (string, error) {
+func (s Scheduler) deadlineReached(ctx context.Context, taskID string) (string, error) {
 	var reason string
-	err := s.Engine.Pool.QueryRow(ctx, `SELECT CASE WHEN t.deadline_at<=now() THEN '任务截止时间已到' WHEN t.budget->>'max_input_tokens' IS NOT NULL AND b.input_tokens>=(t.budget->>'max_input_tokens')::bigint THEN '输入 Token 预算已耗尽' WHEN t.budget->>'max_output_tokens' IS NOT NULL AND b.output_tokens>=(t.budget->>'max_output_tokens')::bigint THEN '输出 Token 预算已耗尽' WHEN t.budget->>'max_tool_calls' IS NOT NULL AND b.tool_calls>=(t.budget->>'max_tool_calls')::bigint THEN '工具调用预算已耗尽' ELSE '' END FROM tasks t JOIN task_budgets b ON b.task_id=t.id WHERE t.id=$1`, taskID).Scan(&reason)
+	err := s.Engine.Pool.QueryRow(ctx, `SELECT CASE WHEN deadline_at<=now() THEN '任务截止时间已到' ELSE '' END FROM tasks WHERE id=$1`, taskID).Scan(&reason)
 	return reason, err
 }
 
@@ -381,14 +378,9 @@ func (s Scheduler) observe(ctx context.Context, c Claim) (Observation, error) {
 		return Observation{}, err
 	}
 	if inserted.RowsAffected() == 1 {
-		charged, chargeErr := reserveTx.Exec(ctx, `UPDATE task_budgets b SET tool_calls=tool_calls+1,updated_at=now() FROM tasks t WHERE b.task_id=$1 AND t.id=b.task_id AND (t.budget->>'max_tool_calls' IS NULL OR b.tool_calls<(t.budget->>'max_tool_calls')::bigint)`, c.TaskID)
-		if chargeErr != nil {
+		if _, chargeErr := reserveTx.Exec(ctx, `UPDATE task_budgets SET tool_calls=tool_calls+1,updated_at=now() WHERE task_id=$1`, c.TaskID); chargeErr != nil {
 			_ = reserveTx.Rollback(ctx)
 			return Observation{}, chargeErr
-		}
-		if charged.RowsAffected() != 1 {
-			_ = reserveTx.Rollback(ctx)
-			return Observation{}, errToolBudget
 		}
 		if err = event(ctx, reserveTx, c.OrganizationID, c.TaskID, "worker.observation_requested", map[string]any{"intent_id": c.IntentID, "generation": c.ObservationGeneration}); err != nil {
 			_ = reserveTx.Rollback(ctx)
@@ -603,33 +595,36 @@ func (s Scheduler) Reconcile(ctx context.Context) (int, error) {
 	if _, err = tx.Exec(ctx, `UPDATE agent_runs r SET status='interrupted',error_class='orphaned_after_restart',completed_at=now() WHERE r.status='running' AND r.started_at<now()-interval '30 seconds' AND NOT EXISTS(SELECT 1 FROM worker_leases l WHERE l.run_id=r.id AND l.expires_at>now()) AND NOT EXISTS(SELECT 1 FROM planner_wakes w WHERE w.task_id=r.task_id AND w.expires_at>now())`); err != nil {
 		return 0, err
 	}
+	if _, err = tx.Exec(ctx, `UPDATE tool_calls c SET status='failed',error_class='process_interrupted',summary='进程中断，执行结果未确认；请使用新的调用重试',completed_at=now() WHERE c.status='running' AND c.started_at<now()-interval '30 seconds' AND NOT EXISTS(SELECT 1 FROM worker_leases l WHERE l.run_id=c.run_id AND l.expires_at>now())`); err != nil {
+		return 0, err
+	}
 	if _, err = tx.Exec(ctx, `UPDATE llm_attempts a SET status='failed',error_class='process_interrupted',completed_at=now() FROM agent_runs r WHERE a.run_id=r.id AND a.status='running' AND r.status IN ('interrupted','stopped','paused','blocked','failed')`); err != nil {
 		return 0, err
 	}
-	budgetRows, err := tx.Query(ctx, `UPDATE task_intents i SET status='exhausted',blocking_reason='任务预算或截止时间已达到',updated_at=now() FROM tasks t JOIN task_budgets b ON b.task_id=t.id WHERE i.task_id=t.id AND i.status='open' AND t.status='running' AND (t.deadline_at<=now() OR (t.budget->>'max_input_tokens' IS NOT NULL AND b.input_tokens>=(t.budget->>'max_input_tokens')::bigint) OR (t.budget->>'max_output_tokens' IS NOT NULL AND b.output_tokens>=(t.budget->>'max_output_tokens')::bigint) OR (t.budget->>'max_tool_calls' IS NOT NULL AND b.tool_calls>=(t.budget->>'max_tool_calls')::bigint)) RETURNING i.id,t.id,t.organization_id`)
+	deadlineRows, err := tx.Query(ctx, `UPDATE task_intents i SET status='exhausted',blocking_reason='任务截止时间已到',updated_at=now() FROM tasks t WHERE i.task_id=t.id AND i.status='open' AND t.status='running' AND t.deadline_at<=now() RETURNING i.id,t.id,t.organization_id`)
 	if err != nil {
 		return 0, err
 	}
-	type budgetIntent struct{ intentID, taskID, orgID string }
-	budgetItems := []budgetIntent{}
-	for budgetRows.Next() {
-		var x budgetIntent
-		if err = budgetRows.Scan(&x.intentID, &x.taskID, &x.orgID); err != nil {
-			budgetRows.Close()
+	type deadlineIntent struct{ intentID, taskID, orgID string }
+	deadlineItems := []deadlineIntent{}
+	for deadlineRows.Next() {
+		var x deadlineIntent
+		if err = deadlineRows.Scan(&x.intentID, &x.taskID, &x.orgID); err != nil {
+			deadlineRows.Close()
 			return 0, err
 		}
-		budgetItems = append(budgetItems, x)
+		deadlineItems = append(deadlineItems, x)
 	}
-	err = budgetRows.Err()
-	budgetRows.Close()
+	err = deadlineRows.Err()
+	deadlineRows.Close()
 	if err != nil {
 		return 0, err
 	}
-	for _, x := range budgetItems {
+	for _, x := range deadlineItems {
 		if _, err = tx.Exec(ctx, `UPDATE exploration_nodes SET state='exhausted',updated_at=now() WHERE id=$1`, x.intentID); err != nil {
 			return 0, err
 		}
-		if err = event(ctx, tx, x.orgID, x.taskID, "intent.exhausted", map[string]any{"intent_id": x.intentID, "reason": "任务预算或截止时间已达到"}); err != nil {
+		if err = event(ctx, tx, x.orgID, x.taskID, "intent.exhausted", map[string]any{"intent_id": x.intentID, "reason": "任务截止时间已到"}); err != nil {
 			return 0, err
 		}
 	}
@@ -700,15 +695,11 @@ func (s Scheduler) RunPlanner(ctx context.Context, c Claim) error {
 	if err != nil {
 		return err
 	}
-	var usedInput, usedOutput, usedTools int64
-	if err = s.Engine.Pool.QueryRow(plannerCtx, `SELECT input_tokens,output_tokens,tool_calls FROM task_budgets WHERE task_id=$1`, c.TaskID).Scan(&usedInput, &usedOutput, &usedTools); err != nil {
-		return err
-	}
 	var activeWorkers int
 	if err = s.Engine.Pool.QueryRow(plannerCtx, `SELECT count(*) FROM worker_leases WHERE task_id=$1 AND expires_at>now()`, c.TaskID).Scan(&activeWorkers); err != nil {
 		return err
 	}
-	input, _ := json.Marshal(map[string]any{"task": detail.Task, "goals": detail.Goals, "scope": detail.Scope, "constraints": detail.Constraints, "graph": graph, "intents": intents, "todos": todos, "decomposer_output": directions, "trigger_events": triggerEvents, "budget_used": map[string]int64{"input_tokens": usedInput, "output_tokens": usedOutput, "tool_calls": usedTools}, "available_worker_slots": detail.Task.WorkerLimit - activeWorkers})
+	input, _ := json.Marshal(map[string]any{"task": detail.Task, "goals": detail.Goals, "scope": detail.Scope, "constraints": detail.Constraints, "graph": graph, "intents": intents, "todos": todos, "decomposer_output": directions, "trigger_events": triggerEvents, "available_worker_slots": detail.Task.WorkerLimit - activeWorkers})
 	plan, err := s.Engine.runRole(plannerCtx, c.OrganizationID, c.ActorID, c.TaskID, "", "planner", string(input), "")
 	if err != nil {
 		return err

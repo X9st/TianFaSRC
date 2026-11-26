@@ -30,10 +30,9 @@ type ConstraintInput struct {
 	Text   string `json:"text"`
 }
 type ExecutionInput struct {
-	PolicyMode  string          `json:"policy_mode"`
-	WorkerLimit int             `json:"worker_limit"`
-	DeadlineAt  *time.Time      `json:"deadline_at"`
-	Budget      json.RawMessage `json:"budget"`
+	PolicyMode  string     `json:"policy_mode"`
+	WorkerLimit int        `json:"worker_limit"`
+	DeadlineAt  *time.Time `json:"deadline_at"`
 }
 type CreateInput struct {
 	Title       string      `json:"title"`
@@ -47,20 +46,19 @@ type CreateInput struct {
 	LLMProfileChain []string          `json:"llm_profile_chain,omitempty"`
 }
 type Task struct {
-	ID             string          `json:"id"`
-	OrganizationID string          `json:"organization_id"`
-	Title          string          `json:"title"`
-	Description    string          `json:"description"`
-	Status         string          `json:"status"`
-	PolicyMode     string          `json:"policy_mode"`
-	WorkerLimit    int             `json:"worker_limit"`
-	DeadlineAt     *time.Time      `json:"deadline_at"`
-	Budget         json.RawMessage `json:"budget"`
-	Version        int64           `json:"version"`
-	ScopeVersion   int64           `json:"scope_version"`
-	CreatedBy      string          `json:"created_by"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
+	ID             string     `json:"id"`
+	OrganizationID string     `json:"organization_id"`
+	Title          string     `json:"title"`
+	Description    string     `json:"description"`
+	Status         string     `json:"status"`
+	PolicyMode     string     `json:"policy_mode"`
+	WorkerLimit    int        `json:"worker_limit"`
+	DeadlineAt     *time.Time `json:"deadline_at"`
+	Version        int64      `json:"version"`
+	ScopeVersion   int64      `json:"scope_version"`
+	CreatedBy      string     `json:"created_by"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 type Goal struct {
 	ID        string    `json:"id"`
@@ -139,12 +137,12 @@ type Asset struct {
 
 type Store struct{ Pool *pgxpool.Pool }
 
-const taskColumns = `id,organization_id,title,description,status,policy_mode,worker_limit,deadline_at,budget,version,scope_version,created_by,created_at,updated_at`
+const taskColumns = `id,organization_id,title,description,status,policy_mode,worker_limit,deadline_at,version,scope_version,created_by,created_at,updated_at`
 
 func scanTask(row pgx.Row) (Task, error) {
 	var result Task
 	err := row.Scan(&result.ID, &result.OrganizationID, &result.Title, &result.Description, &result.Status,
-		&result.PolicyMode, &result.WorkerLimit, &result.DeadlineAt, &result.Budget, &result.Version,
+		&result.PolicyMode, &result.WorkerLimit, &result.DeadlineAt, &result.Version,
 		&result.ScopeVersion, &result.CreatedBy, &result.CreatedAt, &result.UpdatedAt)
 	return result, err
 }
@@ -166,33 +164,6 @@ func (s Store) Create(ctx context.Context, orgID, actorID string, input CreateIn
 	if input.Execution.WorkerLimit < 1 || input.Execution.WorkerLimit > 50 || (input.Execution.PolicyMode != "autonomous" && input.Execution.PolicyMode != "graded" && input.Execution.PolicyMode != "approval") {
 		return Detail{}, ErrInvalid
 	}
-	if len(input.Execution.Budget) == 0 {
-		input.Execution.Budget = json.RawMessage(`{"schema_version":1}`)
-	}
-	var budget map[string]any
-	if json.Unmarshal(input.Execution.Budget, &budget) != nil || budget == nil {
-		return Detail{}, ErrInvalid
-	}
-	if budget["schema_version"] == nil {
-		budget["schema_version"] = float64(1)
-	}
-	if budget["schema_version"] != float64(1) {
-		return Detail{}, ErrInvalid
-	}
-	for _, key := range []string{"max_input_tokens", "max_output_tokens", "max_tool_calls", "max_cost_minor"} {
-		if value, ok := budget[key]; ok && value != nil {
-			n, ok := value.(float64)
-			if !ok || n < 0 || n != float64(int64(n)) {
-				return Detail{}, ErrInvalid
-			}
-		}
-	}
-	if currency, ok := budget["currency"]; ok && currency != nil {
-		if value, ok := currency.(string); !ok || len(value) != 3 {
-			return Detail{}, ErrInvalid
-		}
-	}
-	input.Execution.Budget, _ = json.Marshal(budget)
 	normalized, err := NormalizeScopeSet(input.Scope.Entries)
 	if err != nil {
 		return Detail{}, err
@@ -213,10 +184,10 @@ func (s Store) Create(ctx context.Context, orgID, actorID string, input CreateIn
 	}
 	defer tx.Rollback(ctx)
 	id := identity.NewID()
-	created, err := scanTask(tx.QueryRow(ctx, `INSERT INTO tasks(id,organization_id,title,description,policy_mode,worker_limit,deadline_at,budget,created_by)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING `+taskColumns,
+	created, err := scanTask(tx.QueryRow(ctx, `INSERT INTO tasks(id,organization_id,title,description,policy_mode,worker_limit,deadline_at,created_by)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING `+taskColumns,
 		id, orgID, input.Title, input.Description, input.Execution.PolicyMode, input.Execution.WorkerLimit,
-		input.Execution.DeadlineAt, input.Execution.Budget, actorID))
+		input.Execution.DeadlineAt, actorID))
 	if err != nil {
 		return Detail{}, err
 	}
