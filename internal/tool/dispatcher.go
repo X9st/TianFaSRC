@@ -12,11 +12,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/X9st/TianFaSRC/internal/blob"
+	"github.com/X9st/TianFaSRC/internal/finding"
 	"github.com/X9st/TianFaSRC/internal/identity"
 	"github.com/X9st/TianFaSRC/internal/mcpclient"
 	"github.com/X9st/TianFaSRC/internal/policy"
 	"github.com/X9st/TianFaSRC/internal/skill"
 	"github.com/X9st/TianFaSRC/internal/task"
+	"github.com/X9st/TianFaSRC/internal/traffic"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -52,14 +55,14 @@ type Dispatcher struct {
 }
 
 func Names() []string {
-	return []string{"http.read", "workspace.read", "workspace.write", "workspace.list", "skill.load", "command.run"}
+	return []string{"http.read", "workspace.read", "workspace.write", "workspace.list", "skill.load", "finding.report", "command.run"}
 }
 
 func (d Dispatcher) AvailableNames() []string {
 	if d.CommandImage != "" {
 		return Names()
 	}
-	return Names()[:5]
+	return Names()[:6]
 }
 
 func (d Dispatcher) AvailableForRun(ctx context.Context, orgID, runID string) ([]string, error) {
@@ -137,6 +140,14 @@ func validateInput(name string, raw json.RawMessage) error {
 			Name string `json:"name"`
 		}
 		if err := decodeStrict(raw, &value); err != nil || value.Name == "" {
+			return task.ErrInvalid
+		}
+	case "finding.report":
+		var value finding.Input
+		if err := decodeStrict(raw, &value); err != nil {
+			return task.ErrInvalid
+		}
+		if value.TaskID != "" || value.SourceIntentID != "" || value.SourceRunID != "" || len(value.AssetIDs) == 0 {
 			return task.ErrInvalid
 		}
 	default:
@@ -332,6 +343,17 @@ func (d Dispatcher) Execute(ctx context.Context, call Call) (Outcome, error) {
 				}
 			}
 		}
+	case "finding.report":
+		var input finding.Input
+		if executeErr = decodeStrict(call.Input, &input); executeErr == nil {
+			input.TaskID, input.SourceIntentID, input.SourceRunID = call.TaskID, call.IntentID, call.RunID
+			var item finding.Finding
+			item, executeErr = (finding.Store{Pool: d.Pool}).Create(ctx, call.OrganizationID, call.ActorID, input)
+			if executeErr == nil {
+				payload, _ := json.Marshal(item)
+				result = Result{Summary: "已创建或合并 Finding 草稿：" + item.Title, Output: payload, ContentType: "application/json"}
+			}
+		}
 	default:
 		if strings.HasPrefix(call.Name, "custom__") {
 			result, executeErr = d.executeCustom(ctx, call)
@@ -360,6 +382,14 @@ func (d Dispatcher) Execute(ctx context.Context, call Call) (Outcome, error) {
 	}
 	if latestScopeVersion != scopeVersion {
 		return d.block(ctx, call, id, "授权范围已更新，执行结果已丢弃")
+	}
+	if result.Exchange != nil {
+		ex := result.Exchange
+		_, err := (traffic.Store{Pool: d.Pool, Blobs: blob.Store{Root: d.DataDir}}).Record(ctx, traffic.RecordInput{OrganizationID: call.OrganizationID, TaskID: call.TaskID, RunID: call.RunID, IntentID: call.IntentID, ToolCallID: id, Method: ex.Method, URL: ex.URL, RemoteIP: ex.RemoteIP, StatusCode: ex.StatusCode, TLS: ex.TLS, RequestHeaders: ex.RequestHeaders, ResponseHeaders: ex.ResponseHeaders, RequestRaw: ex.RequestRaw, ResponseRaw: ex.ResponseRaw, RequestedAt: ex.RequestedAt, RespondedAt: ex.RespondedAt})
+		if err != nil {
+			_, _ = d.Pool.Exec(context.WithoutCancel(ctx), `UPDATE tool_calls SET status='failed',error_class='capture_failed',summary=$2,completed_at=now() WHERE id=$1 AND status='running'`, id, err.Error())
+			return Outcome{ID: id, Status: "failed", Summary: err.Error()}, err
+		}
 	}
 	blobHash, err := d.capture(result.Output)
 	if err != nil {
@@ -401,12 +431,21 @@ func deref(value *string) string {
 
 func (d Dispatcher) needsApproval(mode, name string) bool {
 	if mode == "approval" {
-		return name == "workspace.write" || name == "command.run" || strings.HasPrefix(name, "mcp__")
+		return name == "workspace.write" || name == "finding.report" || name == "command.run" || strings.HasPrefix(name, "mcp__")
 	}
 	return mode == "graded" && (name == "command.run" || strings.HasPrefix(name, "mcp__"))
 }
 
 func (d Dispatcher) preflight(ctx context.Context, call Call, detail task.Detail) error {
+	if call.Name == "finding.report" {
+		var observed bool
+		if err := d.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM tool_calls WHERE run_id=$1 AND task_id=$2 AND intent_id=$3 AND name='http.read' AND status='succeeded')`, call.RunID, call.TaskID, call.IntentID).Scan(&observed); err != nil {
+			return err
+		}
+		if !observed {
+			return errors.New("上报漏洞前必须有同一 Run 的真实 HTTP 观察")
+		}
+	}
 	var urlText string
 	if call.Name == "http.read" {
 		var input HTTPInput

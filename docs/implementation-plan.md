@@ -44,9 +44,11 @@
 
 验收证据与安全边界见 [phase4-plan.md](phase4-plan.md)。用户取消任务预算配置的决定见 [ADR-0003](adr/0003-remove-task-budgets.md)。
 
-## Phase 5 — Traffic、Evidence 与 Finding
+## Phase 5 — Traffic、Evidence 与 Finding（核心能力已验收）
 
 - 记录代理、内容寻址 Blob、Finding、不可变证据、复测和报告导出。
+
+验收证据与人工复测边界见 [phase5-plan.md](phase5-plan.md)。
 
 ## Phase 6 — 完整 UI
 

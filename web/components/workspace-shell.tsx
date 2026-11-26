@@ -5,6 +5,7 @@ import {
   Boxes,
   LayoutDashboard,
   LogOut,
+  FileSearch,
   Sparkles,
   ShieldCheck,
   Users,
@@ -17,7 +18,7 @@ export default function WorkspaceShell({
   section,
   children,
 }: {
-  section: "tasks" | "assets" | "users" | "models" | "tools";
+  section: "tasks" | "assets" | "users" | "models" | "tools" | "findings";
   children: React.ReactNode;
 }) {
   const [user, setUser] = useState<User | null>(null);
@@ -78,6 +79,10 @@ export default function WorkspaceShell({
           <a href="/tools/" className={section === "tools" ? "selected" : ""} aria-current={section === "tools" ? "page" : undefined}>
             <Wrench size={18} />
             工具与 Skill
+          </a>
+          <a href="/findings/" className={section === "findings" ? "selected" : ""} aria-current={section === "findings" ? "page" : undefined}>
+            <FileSearch size={18} />
+            流量与漏洞
           </a>
           {user?.role === "admin" && (
             <a

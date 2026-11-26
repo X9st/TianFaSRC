@@ -18,12 +18,13 @@ import (
 )
 
 type Options struct {
-	Logger    *slog.Logger
-	Version   string
-	Readiness system.Readiness
-	Pool      *pgxpool.Pool
-	Secrets   *secret.Store
-	Scheduler *agent.Scheduler
+	Logger        *slog.Logger
+	Version       string
+	Readiness     system.Readiness
+	Pool          *pgxpool.Pool
+	Secrets       *secret.Store
+	Scheduler     *agent.Scheduler
+	CACertificate []byte
 }
 
 const (
@@ -61,6 +62,7 @@ func NewHandler(opts Options) http.Handler {
 				phase3API{phase1API: base}.routes(mux)
 				if opts.Scheduler.Tools != nil {
 					phase4API{phase1API: base}.routes(mux)
+					phase5API{phase1API: base, caCertificate: opts.CACertificate}.routes(mux)
 				}
 			}
 		}

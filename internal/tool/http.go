@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +37,16 @@ type Result struct {
 	ContentType string
 	RemoteIP    string
 	Truncated   bool
+	Exchange    *Exchange
+}
+
+type Exchange struct {
+	Method, URL, RemoteIP           string
+	StatusCode                      int
+	TLS                             map[string]any
+	RequestHeaders, ResponseHeaders map[string][]string
+	RequestRaw, ResponseRaw         []byte
+	RequestedAt, RespondedAt        time.Time
 }
 
 func decodeStrict(raw json.RawMessage, dst any) error {
@@ -97,6 +109,12 @@ func (h HTTPRead) Execute(ctx context.Context, raw json.RawMessage) (Result, int
 			return Result{}, originalVersion, err
 		}
 		request.Header.Set("User-Agent", "TianFa/1.0 authorized-validation")
+		requestRaw, err := httputil.DumpRequestOut(request, true)
+		if err != nil {
+			transport.CloseIdleConnections()
+			return Result{}, originalVersion, err
+		}
+		requestedAt := time.Now()
 		response, err := client.Do(request)
 		if err != nil {
 			transport.CloseIdleConnections()
@@ -116,22 +134,36 @@ func (h HTTPRead) Execute(ctx context.Context, raw json.RawMessage) (Result, int
 			urlText = next.String()
 			continue
 		}
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, (4<<20)+1))
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, (16<<20)+1))
 		response.Body.Close()
 		transport.CloseIdleConnections()
 		if readErr != nil {
 			return Result{}, originalVersion, readErr
 		}
-		truncated := len(body) > 4<<20
-		if truncated {
-			body = body[:4<<20]
+		if len(body) > 16<<20 {
+			return Result{}, originalVersion, errors.New("响应超过 16 MiB 记录上限")
+		}
+		respondedAt := time.Now()
+		response.Body = io.NopCloser(bytes.NewReader(body))
+		responseRaw, err := httputil.DumpResponse(response, true)
+		if err != nil {
+			return Result{}, originalVersion, err
+		}
+		tlsInfo := map[string]any{}
+		if response.TLS != nil {
+			tlsInfo = map[string]any{"version": response.TLS.Version, "cipher_suite": response.TLS.CipherSuite, "server_name": response.TLS.ServerName, "negotiated_protocol": response.TLS.NegotiatedProtocol}
 		}
 		// Scope may be narrowed while a response is in flight. Never return stale data.
 		_, latest, err := h.Scopes(ctx)
 		if err != nil || latest != originalVersion {
 			return Result{}, originalVersion, fmt.Errorf("%w: 授权范围已更新", policy.ErrOutOfScope)
 		}
-		return Result{Summary: fmt.Sprintf("%s %s → HTTP %d (%d 字节)", input.Method, target.URL.Redacted(), response.StatusCode, len(body)), Output: body, ExitCode: response.StatusCode, ContentType: response.Header.Get("Content-Type"), RemoteIP: address.String(), Truncated: truncated}, originalVersion, nil
+		output := body
+		truncated := len(output) > 4<<20
+		if truncated {
+			output = output[:4<<20]
+		}
+		return Result{Summary: fmt.Sprintf("%s %s → HTTP %d (%d 字节)", input.Method, target.URL.Redacted(), response.StatusCode, len(body)), Output: output, ExitCode: response.StatusCode, ContentType: response.Header.Get("Content-Type"), RemoteIP: address.String(), Truncated: truncated, Exchange: &Exchange{Method: input.Method, URL: target.URL.String(), RemoteIP: address.String(), StatusCode: response.StatusCode, TLS: tlsInfo, RequestHeaders: request.Header, ResponseHeaders: response.Header, RequestRaw: requestRaw, ResponseRaw: responseRaw, RequestedAt: requestedAt, RespondedAt: respondedAt}}, originalVersion, nil
 	}
 	return Result{}, originalVersion, errors.New("重定向次数超过上限")
 }

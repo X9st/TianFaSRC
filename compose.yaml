@@ -20,7 +20,7 @@ services:
         condition: service_healthy
     environment:
       TIANFA_HTTP_ADDR: :8080
-      TIANFA_PROXY_ADDR: 127.0.0.1:8081
+      TIANFA_PROXY_ADDR: :8081
       TIANFA_DATABASE_URL: postgres://tianfa:tianfa@postgres:5432/tianfa?sslmode=disable
       TIANFA_DATA_DIR: /var/lib/tianfa
       TIANFA_LOG_LEVEL: info

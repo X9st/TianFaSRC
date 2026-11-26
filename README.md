@@ -4,7 +4,7 @@
 [`全新自主安全验证平台-核心能力实现规格.md`](./全新自主安全验证平台-核心能力实现规格.md)
 为产品事实来源，按 Phase 逐步实现。
 
-当前交付：**Phase 4 — Tool、Scope、Skill 与 MCP**。Worker 可调用受控 HTTP、工作区、隔离命令、自定义只读 HTTP 与按 Skill 解锁的 MCP 工具；所有调用记录策略判定和审计。任务预算配置已移除，历史用量继续统计。
+当前交付：**Phase 5 — Traffic、Evidence 与 Finding 核心闭环**。Worker 可调用受控 HTTP、工作区、隔离命令、自定义只读 HTTP 与按 Skill 解锁的 MCP 工具；真实 HTTP 请求可写入流量索引，Reviewer 可将流量冻结为 Finding 证据并导出校验后的报告。任务预算配置已移除，历史用量继续统计。
 
 ## 本地启动
 
@@ -51,6 +51,8 @@ make dev-web
 
 管理员登录后在 `/models/` 添加模型 Profile 和 API Key，再设置系统默认主备链。相同模型的不同 Key 需分别创建 Profile；任务详情可覆盖主备链，并为目标拆解、规划器、执行者选择链内子链。启动任务会进入持久队列，页面自动刷新进度，并记录 Decomposer、Planner、Intent、Prompt 版本、Transcript、模型用量与真实 ToolCall。可在任务详情暂停、恢复、取消、纠偏、停止或重试方向，并管理有依赖的共享步骤。管理员在 `/tools/` 配置工具、Skill、MCP 与审批；Worker 仅凭真实工具观察写入确认 Fact。
 
+在 `/findings/` 选择任务后可查询流量、创建 Finding 草稿、绑定和排序不可变证据、复核确认、记录复测及导出报告。记录代理默认监听本机 `127.0.0.1:8081`，Compose 宿主机也只映射回环地址。下载本地 CA，在受控测试客户端配置代理认证：用户名 `tianfa`，密码使用页面生成的一小时任务令牌。代理当前支持范围内无正文的 GET/HEAD。复测目前由人工采集新流量并提交验证结论，尚未接入自动 Retester Agent；详见 [Phase 5 验收记录](docs/phase5-plan.md)。
+
 隔离命令工具需显式配置 `TIANFA_TOOL_IMAGE` 为预装工具的容器镜像，默认不开放。MCP stdio 同样使用本机 Docker 无网络容器。远端 MCP 需由管理员确保其服务端自身的网络出口受控；本平台只能校验传给它的显式目标 URL，详见 [Phase 4 验收记录](docs/phase4-plan.md)。
 
 API Key 使用数据目录 `secrets/master.key` 加密保存，该文件权限为 `0600`；部署备份必须同时保留数据库和此密钥文件。若数据库已存在加密凭据而密钥文件丢失，服务会拒绝启动。生产环境应限制数据目录访问。
@@ -67,5 +69,5 @@ OpenAPI 由 Go 契约定义生成：`make openapi` 更新文档，
 `TIANFA_TEST_DATABASE_URL`；CI 中默认运行。
 
 需求追踪和阶段计划见 [docs/requirements-traceability.md](docs/requirements-traceability.md)
-与 [docs/implementation-plan.md](docs/implementation-plan.md)。Phase 4 验收结果见 [docs/phase4-plan.md](docs/phase4-plan.md)。
+与 [docs/implementation-plan.md](docs/implementation-plan.md)。Phase 5 验收结果见 [docs/phase5-plan.md](docs/phase5-plan.md)。
 

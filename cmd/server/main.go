@@ -19,13 +19,16 @@ import (
 	"github.com/X9st/TianFaSRC/internal/agent"
 	"github.com/X9st/TianFaSRC/internal/api"
 	"github.com/X9st/TianFaSRC/internal/auth"
+	"github.com/X9st/TianFaSRC/internal/blob"
 	"github.com/X9st/TianFaSRC/internal/config"
 	"github.com/X9st/TianFaSRC/internal/llm"
+	"github.com/X9st/TianFaSRC/internal/recordproxy"
 	"github.com/X9st/TianFaSRC/internal/secret"
 	"github.com/X9st/TianFaSRC/internal/store/postgres"
 	"github.com/X9st/TianFaSRC/internal/system"
 	"github.com/X9st/TianFaSRC/internal/task"
 	"github.com/X9st/TianFaSRC/internal/tool"
+	"github.com/X9st/TianFaSRC/internal/traffic"
 )
 
 var version = "dev"
@@ -45,6 +48,8 @@ func main() {
 	var pool *pgxpool.Pool
 	var secrets *secret.Store
 	var scheduler *agent.Scheduler
+	var recordingCA *recordproxy.CA
+	var proxyServer *http.Server
 	if cfg.DatabaseURL != "" {
 		pool, err = pgxpool.New(rootCtx, cfg.DatabaseURL)
 		if err != nil {
@@ -82,6 +87,12 @@ func main() {
 			}
 			return
 		}
+		recordingCA, err = recordproxy.OpenCA(cfg.DataDir)
+		if err != nil {
+			logger.Error("open recording proxy CA", "error", err)
+			os.Exit(1)
+		}
+		proxyServer = &http.Server{Addr: cfg.ProxyAddr, Handler: recordproxy.Proxy{CA: recordingCA, Tokens: recordproxy.TokenStore{Pool: pool}, Tasks: task.Store{Pool: pool}, Traffic: traffic.Store{Pool: pool, Blobs: blob.Store{Root: cfg.DataDir}}}, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 	} else {
 		logger.Warn("database is not configured; readiness will remain unavailable")
 	}
@@ -89,6 +100,25 @@ func main() {
 		if scheduler != nil {
 			go scheduler.Run(rootCtx)
 		}
+		go func() {
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-rootCtx.Done():
+					return
+				case <-ticker.C:
+					ctx, cancel := context.WithTimeout(rootCtx, 5*time.Minute)
+					removed, err := (traffic.Store{Pool: pool, Blobs: blob.Store{Root: cfg.DataDir}}).Collect(ctx, time.Now().Add(-24*time.Hour))
+					cancel()
+					if err != nil && rootCtx.Err() == nil {
+						logger.Error("collect unreferenced traffic blobs", "error", err)
+					} else if removed > 0 {
+						logger.Info("collected unreferenced traffic blobs", "count", removed)
+					}
+				}
+			}
+		}()
 		go func() {
 			ticker := time.NewTicker(time.Second)
 			defer ticker.Stop()
@@ -117,16 +147,25 @@ func main() {
 			Pool:      pool,
 			Secrets:   secrets,
 			Scheduler: scheduler,
+			CACertificate: func() []byte {
+				if recordingCA != nil {
+					return recordingCA.Certificate
+				}
+				return nil
+			}(),
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		logger.Info("server listening", "http_addr", cfg.HTTPAddr, "proxy_addr", cfg.ProxyAddr, "version", version)
 		errCh <- server.ListenAndServe()
 	}()
+	if proxyServer != nil {
+		go func() { errCh <- proxyServer.ListenAndServe() }()
+	}
 
 	select {
 	case <-rootCtx.Done():
@@ -136,6 +175,11 @@ func main() {
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			logger.Error("graceful shutdown failed", "error", err)
 			os.Exit(1)
+		}
+		if proxyServer != nil {
+			if err := proxyServer.Shutdown(shutdownCtx); err != nil {
+				logger.Error("proxy shutdown failed", "error", err)
+			}
 		}
 	case err := <-errCh:
 		if !errors.Is(err, http.ErrServerClosed) {
