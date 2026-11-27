@@ -33,7 +33,7 @@ export type Detail = {
   scope: ScopeEntry[];
 };
 export type Graph = {
-  nodes: { id: string; kind: string; state: string; summary: string }[];
+  nodes: { id: string; kind: string; state: string; summary: string; source_intent_id?: string; run_id?: string; tool_call_id?: string }[];
   edges: { from_node_id: string; to_node_id: string; kind: string }[];
   anchors: {
     node_id: string;

@@ -76,6 +76,7 @@ export default function FindingsPage() {
     catch(cause) { setError(cause instanceof Error?cause.message:"加载失败"); }
   },[loadTask,taskID]);
   useEffect(()=>{ void reload(); },[]); // initial load only
+  useEffect(()=>{const value=new URLSearchParams(window.location.search).get("tab");if(value==="traffic"||value==="findings"||value==="report"||value==="proxy")setTab(value);},[]);
   useEffect(()=>{ if(!selectedFinding) { setEvidence([]); setRetests([]); return; } const id=selectedFinding.id; void Promise.all([api<Evidence[]>(`/findings/${id}/evidence`),api<Retest[]>(`/findings/${id}/retests`)]).then(([e,r])=>{setEvidence(e);setRetests(r);}).catch((cause)=>setError(cause instanceof Error?cause.message:"证据加载失败")); },[selectedFinding]);
 
   async function act(run:()=>Promise<unknown>,success:string) { setBusy(true); setError(""); setNotice(""); try { await run(); setNotice(success); await loadTask(taskID); if(selectedFinding) { const fresh=await api<Finding>(`/findings/${selectedFinding.id}`); setSelectedFinding(fresh); } } catch(cause) { setError(cause instanceof Error?cause.message:"操作失败"); } finally { setBusy(false); } }

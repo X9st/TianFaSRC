@@ -46,6 +46,7 @@ export default function ToolsPage() {
   useEffect(() => { void reload(); }, [reload]);
 
   async function act(action: () => Promise<unknown>, success: string) {
+    if (["工具已关闭","工具已启用","Skill 状态已更新","服务状态已更新","MCP 工具状态已更新","自定义工具状态已更新"].includes(success) && !window.confirm("更改工具或服务策略？本组织后续 Worker 调用将受到影响。")) return;
     setBusy(true); setError(""); setNotice("");
     try { await action(); setNotice(success); await reload(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "操作失败"); }

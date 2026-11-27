@@ -165,6 +165,24 @@ components:
                 - canonical_key
                 - display_value
             type: object
+        AuditEntry:
+            properties:
+                action:
+                    type: string
+                actor:
+                    type: string
+                id:
+                    format: uuid
+                    type: string
+                occurred_at:
+                    format: date-time
+                    type: string
+                resource_id:
+                    format: uuid
+                    type: string
+                resource_type:
+                    type: string
+            type: object
         CVSS:
             properties:
                 score:
@@ -192,6 +210,42 @@ components:
             required:
                 - effect
                 - text
+            type: object
+        ConversationMessage:
+            properties:
+                action:
+                    type: string
+                content:
+                    type: string
+                created_at:
+                    format: date-time
+                    type: string
+                id:
+                    format: uuid
+                    type: string
+                role:
+                    type: string
+            type: object
+        ConversationWrite:
+            properties:
+                action:
+                    enum:
+                        - ask
+                        - goal
+                        - constraint
+                        - intent
+                        - steer
+                    type: string
+                goal_id:
+                    format: uuid
+                    type: string
+                intent_id:
+                    format: uuid
+                    type: string
+                success_criteria:
+                    type: string
+                text:
+                    type: string
             type: object
         Coverage:
             properties:
@@ -766,6 +820,24 @@ components:
                 - state
                 - summary
             type: object
+        PolicyBlock:
+            properties:
+                created_at:
+                    format: date-time
+                    type: string
+                id:
+                    format: uuid
+                    type: string
+                intent_id:
+                    format: uuid
+                    type: string
+                reason:
+                    type: string
+                summary:
+                    type: string
+                tool:
+                    type: string
+            type: object
         Problem:
             properties:
                 detail:
@@ -1086,6 +1158,8 @@ components:
                 created_at:
                     format: date-time
                     type: string
+                evidence_count:
+                    type: integer
                 id:
                     format: uuid
                     type: string
@@ -1125,6 +1199,7 @@ components:
                 - input
                 - status
                 - scope_version
+                - evidence_count
                 - created_at
             type: object
         TraceHit:
@@ -1304,6 +1379,19 @@ components:
                 - output_tokens_used
                 - reason
                 - started_at
+            type: object
+        WorkspaceFile:
+            properties:
+                intent_id:
+                    format: uuid
+                    type: string
+                modified_at:
+                    format: date-time
+                    type: string
+                name:
+                    type: string
+                size:
+                    type: integer
             type: object
     securitySchemes:
         SessionCookie:
@@ -2089,6 +2177,34 @@ paths:
             security:
                 - SessionCookie: []
             summary: 查询组织资产图
+    /api/v1/audit-log:
+        get:
+            operationId: listAuditLog
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        properties:
+                                            items:
+                                                items:
+                                                    $ref: '#/components/schemas/AuditEntry'
+                                                type: array
+                                            next_cursor:
+                                                type: string
+                                        type: object
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        type: object
+                                type: object
+                    description: 成功
+            security:
+                - SessionCookie: []
+            summary: 分页查看本组织审计
     /api/v1/auth/login:
         post:
             operationId: login
@@ -2440,6 +2556,47 @@ paths:
             security:
                 - SessionCookie: []
             summary: 启停自定义 HTTP 工具
+    /api/v1/dashboard:
+        get:
+            operationId: getDashboard
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        properties:
+                                            active_workers:
+                                                type: integer
+                                            cost_minor:
+                                                type: integer
+                                            findings:
+                                                properties: {}
+                                                type: object
+                                            input_tokens:
+                                                type: integer
+                                            models:
+                                                properties: {}
+                                                type: object
+                                            output_tokens:
+                                                type: integer
+                                            recent_activity:
+                                                items:
+                                                    properties: {}
+                                                    type: object
+                                                type: array
+                                        type: object
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        type: object
+                                type: object
+                    description: 成功
+            security:
+                - SessionCookie: []
+            summary: 查看工作台指标
     /api/v1/evidence-bindings/{id}:
         delete:
             operationId: unbindEvidence
@@ -4662,6 +4819,35 @@ paths:
             security:
                 - SessionCookie: []
             summary: 将探索节点锚定到资产
+    /api/v1/policy:
+        get:
+            operationId: getPolicyOverview
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        properties:
+                                            blocked_tool_calls:
+                                                type: integer
+                                            global_worker_limit:
+                                                type: integer
+                                            worker_hard_limits:
+                                                properties: {}
+                                                type: object
+                                        type: object
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        type: object
+                                type: object
+                    description: 成功
+            security:
+                - SessionCookie: []
+            summary: 查看运行硬边界
     /api/v1/proxy/ca:
         get:
             operationId: downloadRecordingCA
@@ -5976,6 +6162,80 @@ paths:
             security:
                 - SessionCookie: []
             summary: 向草稿增加约束
+    /api/v1/tasks/{id}/conversation:
+        get:
+            operationId: listTaskConversation
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            $ref: '#/components/schemas/ConversationMessage'
+                                        type: array
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        type: object
+                                type: object
+                    description: 成功
+            security:
+                - SessionCookie: []
+            summary: 查看任务会话
+        post:
+            operationId: postTaskConversation
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+                - in: header
+                  name: X-CSRF-Token
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/ConversationWrite'
+                required: true
+            responses:
+                "201":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        properties:
+                                            message_id:
+                                                format: uuid
+                                                type: string
+                                            reply:
+                                                type: string
+                                        type: object
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        type: object
+                                type: object
+                    description: 成功
+            security:
+                - SessionCookie: []
+            summary: 发送人在环路指令
     /api/v1/tasks/{id}/coverage:
         get:
             operationId: getCoverage
@@ -6805,6 +7065,36 @@ paths:
             security:
                 - SessionCookie: []
             summary: 设置任务模型链
+    /api/v1/tasks/{id}/policy-blocks:
+        get:
+            operationId: listPolicyBlocks
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            $ref: '#/components/schemas/PolicyBlock'
+                                        type: array
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        type: object
+                                type: object
+                    description: 成功
+            security:
+                - SessionCookie: []
+            summary: 查看任务策略阻断
     /api/v1/tasks/{id}/proxy-token:
         post:
             operationId: issueProxyToken
@@ -7737,6 +8027,91 @@ paths:
             security:
                 - SessionCookie: []
             summary: 检索本任务执行记录
+    /api/v1/tasks/{id}/workspace:
+        get:
+            operationId: listTaskWorkspaceFiles
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            $ref: '#/components/schemas/WorkspaceFile'
+                                        type: array
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        type: object
+                                type: object
+                    description: 成功
+            security:
+                - SessionCookie: []
+            summary: 列出任务文件
+    /api/v1/tasks/{id}/workspace/{intent}/{name}:
+        get:
+            operationId: getTaskWorkspaceFile
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+                - in: path
+                  name: intent
+                  required: true
+                  schema:
+                    format: uuid
+                    type: string
+                - in: path
+                  name: name
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        properties:
+                                            intent_id:
+                                                format: uuid
+                                                type: string
+                                            name:
+                                                type: string
+                                            preview_available:
+                                                type: boolean
+                                            size:
+                                                type: integer
+                                            text_preview:
+                                                type: string
+                                        type: object
+                                    meta:
+                                        properties:
+                                            request_id:
+                                                type: string
+                                        type: object
+                                type: object
+                        application/octet-stream:
+                            schema:
+                                format: binary
+                                type: string
+                    description: 成功
+            security:
+                - SessionCookie: []
+            summary: 预览或下载任务文件
     /api/v1/tasks/{id}:advance:
         post:
             operationId: advanceTask

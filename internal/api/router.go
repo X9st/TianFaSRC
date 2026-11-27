@@ -63,6 +63,7 @@ func NewHandler(opts Options) http.Handler {
 				if opts.Scheduler.Tools != nil {
 					phase4API{phase1API: base}.routes(mux)
 					phase5API{phase1API: base, caCertificate: opts.CACertificate}.routes(mux)
+					phase6API{phase1API: base, dataDir: opts.Scheduler.Tools.DataDir}.routes(mux)
 				}
 			}
 		}

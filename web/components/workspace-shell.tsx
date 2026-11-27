@@ -10,6 +10,9 @@ import {
   ShieldCheck,
   Users,
   Wrench,
+  FolderOpen,
+  MessageSquare,
+  ShieldAlert,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, redirectToLogin, type User } from "../lib/api";
@@ -18,7 +21,7 @@ export default function WorkspaceShell({
   section,
   children,
 }: {
-  section: "dashboard" | "tasks" | "assets" | "users" | "models" | "tools" | "findings";
+  section: "dashboard" | "tasks" | "assets" | "users" | "models" | "tools" | "findings" | "workspace" | "conversation" | "system";
   children: React.ReactNode;
 }) {
   const [user, setUser] = useState<User | null>(null);
@@ -84,6 +87,9 @@ export default function WorkspaceShell({
             <FileSearch size={18} />
             流量与漏洞
           </a>
+          <a href="/conversation/" className={section === "conversation" ? "selected" : ""} aria-current={section === "conversation" ? "page" : undefined}><MessageSquare size={18}/>任务会话</a>
+          {(user?.role === "admin" || user?.role === "operator") && <a href="/workspace/" className={section === "workspace" ? "selected" : ""} aria-current={section === "workspace" ? "page" : undefined}><FolderOpen size={18}/>任务文件</a>}
+          {user?.role === "admin" && <a href="/system/" className={section === "system" ? "selected" : ""} aria-current={section === "system" ? "page" : undefined}><ShieldAlert size={18}/>策略与审计</a>}
           {user?.role === "admin" && (
             <a
               href="/users/"

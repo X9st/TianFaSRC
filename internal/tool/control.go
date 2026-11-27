@@ -12,19 +12,20 @@ import (
 )
 
 type CallRecord struct {
-	ID           string          `json:"id"`
-	TaskID       string          `json:"task_id"`
-	IntentID     string          `json:"intent_id"`
-	RunID        string          `json:"run_id"`
-	Name         string          `json:"name"`
-	Input        json.RawMessage `json:"input"`
-	Status       string          `json:"status"`
-	PolicyReason *string         `json:"policy_reason,omitempty"`
-	Summary      *string         `json:"summary,omitempty"`
-	Output       json.RawMessage `json:"output,omitempty"`
-	ScopeVersion int64           `json:"scope_version"`
-	CreatedAt    time.Time       `json:"created_at"`
-	CompletedAt  *time.Time      `json:"completed_at,omitempty"`
+	ID            string          `json:"id"`
+	TaskID        string          `json:"task_id"`
+	IntentID      string          `json:"intent_id"`
+	RunID         string          `json:"run_id"`
+	Name          string          `json:"name"`
+	Input         json.RawMessage `json:"input"`
+	Status        string          `json:"status"`
+	PolicyReason  *string         `json:"policy_reason,omitempty"`
+	Summary       *string         `json:"summary,omitempty"`
+	Output        json.RawMessage `json:"output,omitempty"`
+	ScopeVersion  int64           `json:"scope_version"`
+	EvidenceCount int             `json:"evidence_count"`
+	CreatedAt     time.Time       `json:"created_at"`
+	CompletedAt   *time.Time      `json:"completed_at,omitempty"`
 }
 
 type Approval struct {
@@ -39,7 +40,7 @@ type Approval struct {
 }
 
 func (d Dispatcher) ListCalls(ctx context.Context, orgID, taskID string) ([]CallRecord, error) {
-	rows, err := d.Pool.Query(ctx, `SELECT id,task_id,intent_id,run_id,name,input,status,policy_reason,summary,output,scope_version,created_at,completed_at FROM tool_calls WHERE organization_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 200`, orgID, taskID)
+	rows, err := d.Pool.Query(ctx, `SELECT c.id,c.task_id,c.intent_id,c.run_id,c.name,c.input,c.status,c.policy_reason,c.summary,c.output,c.scope_version,c.created_at,c.completed_at,(SELECT count(DISTINCT eb.id) FROM traffic tr JOIN evidence_snapshots es ON es.source_traffic_id=tr.id JOIN evidence_bindings eb ON eb.snapshot_id=es.id WHERE tr.tool_call_id=c.id) FROM tool_calls c WHERE c.organization_id=$1 AND c.task_id=$2 ORDER BY c.created_at DESC,c.id DESC LIMIT 200`, orgID, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +48,7 @@ func (d Dispatcher) ListCalls(ctx context.Context, orgID, taskID string) ([]Call
 	items := []CallRecord{}
 	for rows.Next() {
 		var item CallRecord
-		if err := rows.Scan(&item.ID, &item.TaskID, &item.IntentID, &item.RunID, &item.Name, &item.Input, &item.Status, &item.PolicyReason, &item.Summary, &item.Output, &item.ScopeVersion, &item.CreatedAt, &item.CompletedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.TaskID, &item.IntentID, &item.RunID, &item.Name, &item.Input, &item.Status, &item.PolicyReason, &item.Summary, &item.Output, &item.ScopeVersion, &item.CreatedAt, &item.CompletedAt, &item.EvidenceCount); err != nil {
 			return nil, err
 		}
 		items = append(items, item)

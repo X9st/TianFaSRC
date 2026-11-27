@@ -14,10 +14,104 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 type Workspace struct {
 	Root string
+}
+
+type WorkspaceFile struct {
+	IntentID   string    `json:"intent_id"`
+	Name       string    `json:"name"`
+	Size       int64     `json:"size"`
+	ModifiedAt time.Time `json:"modified_at"`
+}
+
+// ListTaskFiles only visits UUID-named intent directories and regular files.
+func (w Workspace) ListTaskFiles(taskID string) ([]WorkspaceFile, error) {
+	if w.Root == "" || !uuidLike(taskID) {
+		return nil, errors.New("任务工作区无效")
+	}
+	root := filepath.Join(w.Root, "workspaces", taskID)
+	if info, err := os.Lstat(root); err == nil && !info.IsDir() {
+		return nil, errors.New("任务工作区不是普通目录")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	dirs, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return []WorkspaceFile{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := []WorkspaceFile{}
+	for _, dir := range dirs {
+		if !uuidLike(dir.Name()) || !dir.IsDir() {
+			continue
+		}
+		files, err := os.ReadDir(filepath.Join(root, dir.Name()))
+		if err != nil {
+			return nil, err
+		}
+		for _, file := range files {
+			if !safeName(file.Name()) || !file.Type().IsRegular() {
+				continue
+			}
+			info, err := file.Info()
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, WorkspaceFile{IntentID: dir.Name(), Name: file.Name(), Size: info.Size(), ModifiedAt: info.ModTime()})
+			if len(out) >= 500 {
+				return out, nil
+			}
+		}
+	}
+	return out, nil
+}
+
+func (w Workspace) ReadTaskFile(taskID, intentID, name string) ([]byte, error) {
+	if w.Root == "" || !uuidLike(taskID) || !uuidLike(intentID) || !safeName(name) {
+		return nil, errors.New("任务文件路径无效")
+	}
+	taskDir := filepath.Join(w.Root, "workspaces", taskID)
+	for _, dir := range []string{taskDir, filepath.Join(taskDir, intentID)} {
+		info, err := os.Lstat(dir)
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() {
+			return nil, errors.New("工作区目录无效")
+		}
+	}
+	path := filepath.Join(taskDir, intentID, name)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > 4<<20 {
+		return nil, errors.New("只允许读取不超过 4 MiB 的普通文件")
+	}
+	root, err := os.OpenRoot(taskDir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	file, err := root.Open(filepath.Join(intentID, name))
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		return nil, errors.New("文件在读取期间发生变化")
+	}
+	return io.ReadAll(io.LimitReader(file, (4<<20)+1))
 }
 
 func (w Workspace) taskDir(taskID, intentID string) (string, error) {
@@ -48,7 +142,15 @@ func uuidLike(value string) bool {
 }
 
 func safeName(name string) bool {
-	return name != "" && name != "." && name != ".." && len(name) <= 180 && !strings.HasPrefix(name, ".") && !strings.ContainsAny(name, "/\\\x00")
+	if name == "" || name == "." || name == ".." || len(name) > 180 || strings.HasPrefix(name, ".") || strings.ContainsAny(name, "/\\\x00") {
+		return false
+	}
+	for _, char := range name {
+		if unicode.IsControl(char) {
+			return false
+		}
+	}
+	return true
 }
 
 type fileInput struct {

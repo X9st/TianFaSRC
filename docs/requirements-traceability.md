@@ -27,18 +27,19 @@
 | REQ-WORK-003 | 4 | 已实现 | `internal/tool/dispatcher.go`、`internal/policy` | Schema、角色、绑定、Scope、审批、审计集成测试 |
 | REQ-WORK-005..007 | 3..4 | 部分实现 | `internal/agent/traces.go`、`scheduler.go`、`worker_tools.go`、`compaction.go` | Steer、Trace、真实工具多回合；主动 Trace 工具与完整 settlement 待后续阶段，预算配置由 ADR-0003 取消 |
 | REQ-ENG-001..006 | 3 | 已实现 | `internal/agent/scheduler.go`、`000004_phase3.sql` | 20 并发领取、任务公平性、事务内 Run/Lease、子进程 Kill 后接管、孤儿 Run 回收 |
-| REQ-PROD-003、006 | 3..6 | 部分实现 | `internal/agent`、`web/app/tasks` | Intent/Run/Trace/控制已实现；完整 Agent 工作台与实时 SSE 在 Phase 6 |
+| REQ-PROD-003、006 | 3..6 | 已实现核心 UI | `internal/agent`、`web/app/tasks`、`web/app/conversation` | Intent/Run/Trace/控制、实时 SSE、人工会话与 Worker 独立预算；见 phase6-plan |
 | REQ-PROD-004、008 | 4 | 已实现 | `internal/tool`、`internal/policy`、`web/app/tools` | ToolCall 血缘、输出、策略判定、越界阻断和浏览器验收 |
 | REQ-TOOL-001..004、REQ-SKILL-001..005 | 4 | 核心实现 | `internal/tool`、`internal/skill`、`internal/mcpclient` | Fake MCP、Skill deferred、ZIP、Schema、输出与审计测试；远端 MCP 次级网络边界见 phase4-plan |
 | REQ-PROD-005 | 5 | 已实现 | `internal/finding`、`internal/blob`、`000006_phase5.sql` | `TestEvidenceSurvivesTrafficDeletionAndRejectsTampering` |
 | REQ-ARCH-008 | 5 | 部分实现 | `internal/finding`、`internal/tool/dispatcher.go` | HTTP 证据与复核确认门槛已实现；命令输出、截图及日志证据类型待后续阶段 |
 | REQ-TRAFFIC-001..006 | 5 | 核心实现 | `internal/recordproxy`、`internal/traffic`、`internal/blob`、`web/app/findings` | `TestRecordingProxyHTTPAndHTTPSRespectScope`、`TestEvidenceSurvivesTrafficDeletionAndRejectsTampering`；代理限 GET/HEAD |
 | REQ-EVID-001..005 | 5 | 已实现 | `internal/finding`、`internal/report`、`000006_phase5.sql` | 绑定幂等、版本冲突、证据排序、删除普通流量后读取、篡改拒绝与导出校验集成测试 |
-| REQ-PROD-009、REQ-UI-006 | 5..6 | 部分实现 | `web/app/findings`、`internal/report` | Phase 5 页展示流量和证据版本过期状态；完整实时 Agent 工作台在 Phase 6 |
+| REQ-PROD-009、REQ-UI-006 | 5..6 | 已实现 UI | `web/app/findings`、`internal/report`、`web/app/tasks` | 报告证据过期提示、实时任务动态和执行详情；见 phase6-plan |
+| REQ-UI-001..007、REQ-PROD-007 | 6 | 核心实现 | `web/app`、`internal/api/phase6.go`、`internal/tool/workspace.go` | 状态文本、操作确认、SSE 去重、ToolCall/图血缘、证据过期、持久队列状态；工作区与审计 RBAC 集成测试 |
 | REQ-PROD-010 | 5..7 | 部分实现 | `internal/agent/phase5_integration_test.go`、`docs/phase5-plan.md` | Phase 5 集成测试与桌面/窄屏浏览器验收已完成；完整端到端发布门槛在 Phase 7 |
 
 每完成一个 Phase，本表必须扩展到该阶段触及的全部需求号，并附上测试证据。
 
-Phase 0/1/2/3/4/5 的 OpenAPI 契约由 `internal/api/openapi_contract.go`、`internal/api/openapi_phase1.go`、`internal/api/openapi_phase2.go`、`internal/api/openapi_phase3.go`、`internal/api/openapi_phase4.go` 与 `internal/api/openapi_phase5.go` 生成，
+Phase 0–6 的 OpenAPI 契约由 `internal/api/openapi_contract.go`、各阶段的 `internal/api/openapi_phase*.go` 生成，
 `go run ./cmd/openapi -check` 在 CI 检查漂移。开发前端将健康请求转发至 Go 服务。
 

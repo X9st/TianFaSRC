@@ -55,8 +55,10 @@ type TraceHit = { run_id: string; intent_id: string; ordinal: number; role: stri
 type AgentRun = { id: string; role: string; status: string; prompt_version: number; error_class?: string; started_at: string };
 type WorkerBudget = { run_id: string; intent_id: string; max_model_rounds: number; max_tool_calls: number; max_tokens: number; max_seconds: number; model_rounds_used: number; tool_calls_used: number; input_tokens_used: number; output_tokens_used: number; reason: string; started_at: string };
 type RunDetail = { run: AgentRun; messages: { ordinal: number; role: string; trust_level: string; content: string }[]; attempts: { profile_id: string; status: string; error_class?: string; input_tokens: number; output_tokens: number; estimated: boolean }[] };
-type ToolCall = { id: string; name: string; input: Record<string, unknown>; status: string; summary?: string; policy_reason?: string; output?: { preview?: string; bytes?: number; remote_ip?: string }; scope_version: number; created_at: string };
+type ToolCall = { id: string; name: string; input: Record<string, unknown>; status: string; summary?: string; policy_reason?: string; output?: { preview?: string; bytes?: number; remote_ip?: string }; scope_version: number; evidence_count:number; created_at: string };
 type Approval = { id: string; tool_call_id: string; task_id: string; tool_name: string; status: string; reason?: string; requested_at: string };
+type PolicyBlock = { id: string; intent_id: string; tool: string; reason: string; summary: string; created_at: string };
+type ActivityItem = { id:string; event_id:string; task_id:string; kind:string; summary:string; occurred_at:string };
 const agentRoles: Record<string,string> = { decomposer: "目标拆解", planner: "规划器", worker: "执行者" };
 const runStatuses: Record<string,string> = { running: "运行中", succeeded: "成功", blocked: "待恢复", failed: "失败", interrupted: "运行中断", paused: "已暂停", exhausted: "回合或期限已到", stopped: "已停止" };
 const intentStatuses: Record<string,string> = { open: "等待领取", leased: "已领取", running: "执行中", done: "已完成", blocked: "待处理", exhausted: "回合或期限已到", paused: "已暂停", stopped: "已停止" };
@@ -91,6 +93,9 @@ function scopePayload(entries: ScopeDraft[]) {
 
 function TaskWorkspace() {
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [filterText,setFilterText]=useState("");
+  const [filterStatus,setFilterStatus]=useState("");
+  const [selectedTasks,setSelectedTasks]=useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -130,6 +135,8 @@ function TaskWorkspace() {
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
   const [toolBindings, setToolBindings] = useState<Record<string, boolean>>({});
   const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [policyBlocks, setPolicyBlocks] = useState<PolicyBlock[]>([]);
+  const [activities,setActivities]=useState<ActivityItem[]>([]);
   const [viewer, setViewer] = useState<User | null>(null);
   const [approvalReason, setApprovalReason] = useState("");
 
@@ -157,7 +164,7 @@ function TaskWorkspace() {
       `/tasks/?id=${encodeURIComponent(id)}`,
     );
     try {
-      const [nextDetail, nextGraph, nextCoverage, nextModels, nextChain, nextDefault, nextRoutes, nextIntents, nextRuns, nextTodos, nextCalls, nextBindings, nextApprovals, nextBudgets] = await Promise.all([
+      const [nextDetail, nextGraph, nextCoverage, nextModels, nextChain, nextDefault, nextRoutes, nextIntents, nextRuns, nextTodos, nextCalls, nextBindings, nextApprovals, nextBudgets, nextBlocks, nextActivities] = await Promise.all([
         api<Detail>(`/tasks/${id}`),
         api<Graph>(`/tasks/${id}/graph`),
         api<Coverage>(`/tasks/${id}/coverage`),
@@ -172,6 +179,8 @@ function TaskWorkspace() {
         api<Record<string, boolean>>("/tools"),
         api<Approval[]>("/approvals").catch(() => []),
         api<WorkerBudget[]>(`/tasks/${id}/worker-budgets`),
+        api<PolicyBlock[]>(`/tasks/${id}/policy-blocks`),
+        api<ActivityItem[]>(`/tasks/${id}/activities?limit=100`),
       ]);
       setDetail(nextDetail);
       setGraph(nextGraph);
@@ -180,6 +189,8 @@ function TaskWorkspace() {
       setAgentRoutes({ decomposer: nextRoutes[0].profiles, planner: nextRoutes[1].profiles, worker: nextRoutes[2].profiles });
       setIntents(nextIntents); setRuns(nextRuns);
       setWorkerBudgets(nextBudgets);
+      setPolicyBlocks(nextBlocks);
+      setActivities(nextActivities);
       setTodos(nextTodos);
       setToolCalls(nextCalls); setToolBindings(nextBindings); setApprovals(nextApprovals.filter((item) => item.task_id === id));
     } catch (cause) {
@@ -206,9 +217,11 @@ function TaskWorkspace() {
         api<ToolCall[]>(`/tasks/${selected}/tool-calls`),
         api<Approval[]>("/approvals").catch(() => []),
         api<WorkerBudget[]>(`/tasks/${selected}/worker-budgets`),
-      ]).then(([next, nextIntents, nextRuns, nextTodos, nextCalls, nextApprovals, nextBudgets]) => {
+        api<ActivityItem[]>(`/tasks/${selected}/activities?limit=100`),
+      ]).then(([next, nextIntents, nextRuns, nextTodos, nextCalls, nextApprovals, nextBudgets, nextActivities]) => {
         setDetail(next); setIntents(nextIntents); setRuns(nextRuns); setTodos(nextTodos);
         setToolCalls(nextCalls); setWorkerBudgets(nextBudgets); setApprovals(nextApprovals.filter((item) => item.task_id === selected));
+        setActivities(nextActivities);
       }).catch(() => {});
     }, 3000);
     return () => window.clearInterval(timer);
@@ -225,7 +238,7 @@ function TaskWorkspace() {
       if (seen.size > 200) seen.delete(seen.values().next().value!);
       window.clearTimeout(pending);
       pending = window.setTimeout(() => {
-        void Promise.all([api<Detail>(`/tasks/${selected}`),api<Graph>(`/tasks/${selected}/graph`),api<Coverage>(`/tasks/${selected}/coverage`),api<Intent[]>(`/tasks/${selected}/intents`),api<AgentRun[]>(`/tasks/${selected}/agent-runs`),api<WorkerBudget[]>(`/tasks/${selected}/worker-budgets`),api<ToolCall[]>(`/tasks/${selected}/tool-calls`)]).then(([next,nextGraph,nextCoverage,nextIntents,nextRuns,nextBudgets,nextCalls])=>{setDetail(next);setGraph(nextGraph);setCoverage(nextCoverage);setIntents(nextIntents);setRuns(nextRuns);setWorkerBudgets(nextBudgets);setToolCalls(nextCalls);}).catch(()=>{});
+        void Promise.all([api<Detail>(`/tasks/${selected}`),api<Graph>(`/tasks/${selected}/graph`),api<Coverage>(`/tasks/${selected}/coverage`),api<Intent[]>(`/tasks/${selected}/intents`),api<AgentRun[]>(`/tasks/${selected}/agent-runs`),api<WorkerBudget[]>(`/tasks/${selected}/worker-budgets`),api<ToolCall[]>(`/tasks/${selected}/tool-calls`),api<ActivityItem[]>(`/tasks/${selected}/activities?limit=100`)]).then(([next,nextGraph,nextCoverage,nextIntents,nextRuns,nextBudgets,nextCalls,nextActivities])=>{setDetail(next);setGraph(nextGraph);setCoverage(nextCoverage);setIntents(nextIntents);setRuns(nextRuns);setWorkerBudgets(nextBudgets);setToolCalls(nextCalls);setActivities(prior=>{const merged=new Map(prior.map(item=>[item.event_id,item]));for(const item of nextActivities)merged.set(item.event_id,item);return [...merged.values()].sort((a,b)=>b.occurred_at.localeCompare(a.occurred_at)).slice(0,100);});}).catch(()=>{});
       }, 200);
     });
     return () => { window.clearTimeout(pending); stream.close(); };
@@ -299,6 +312,7 @@ function TaskWorkspace() {
   async function saveScope(event: React.FormEvent) {
     event.preventDefault();
     if (!detail) return;
+    if (detail.task.status === "running" && !window.confirm("更新运行中任务的授权范围？后续工具调用将立即使用新 Scope，当前 Worker 可能被阻断。")) return;
     setBusy(true);
     setError("");
     try {
@@ -351,6 +365,15 @@ function TaskWorkspace() {
     catch (cause) { setError(cause instanceof Error ? cause.message : "操作失败"); }
     finally { setBusy(false); }
   }
+  async function bulkCommand(name:"pause"|"cancel") {
+    const targets=tasks.filter(item=>selectedTasks.has(item.id)&&item.status==="running");
+    if(!targets.length)return;
+    if(!window.confirm(`将${name==="pause"?"暂停":"取消"} ${targets.length} 个运行中的任务。当前 Worker 会停止；操作成功的任务需要分别恢复或重新创建。继续？`))return;
+    setBusy(true);const failed:string[]=[];
+    for(const item of targets){try{await api(`/tasks/${item.id}:${name}`,{method:"POST"});}catch{failed.push(item.title);}}
+    setSelectedTasks(new Set());await refresh();setBusy(false);
+    if(failed.length)setError(`部分任务操作失败：${failed.join("、")}`);
+  }
   async function intentCommand(id: string, name: "steer" | "stop" | "retry") {
     if (!detail) return;
     if (name === "retry" && !window.confirm("重新运行这个方向？会创建新的 Worker Run 并消耗新的独立预算。")) return;
@@ -398,6 +421,7 @@ function TaskWorkspace() {
   }
   async function toggleTool(name: string, enabled: boolean) {
     if (!detail) return;
+    if (!window.confirm(`${enabled ? "启用" : "关闭"}工具 ${name}？此变更会影响本组织后续的 Worker 调用。`)) return;
     setBusy(true); setError("");
     try {
       await api(`/tools/${encodeURIComponent(name)}/binding`, { method: "PUT", body: JSON.stringify({ enabled }) });
@@ -712,21 +736,24 @@ function TaskWorkspace() {
                 </div>)}</div>
                 {intentAction && <div className="run-transcript"><h3>{intentAction.name === "steer" ? "纠偏执行者" : "停止执行方向"}</h3><p>{intentAction.name === "steer" ? "此指令会在下一次模型动作前加入上下文。" : "请说明停止原因，便于后续审计。"}</p><textarea aria-label={intentAction.name === "steer" ? "纠偏指令" : "停止原因"} value={actionMessage} onChange={(event) => setActionMessage(event.target.value)} maxLength={4000} rows={3} placeholder={intentAction.name === "steer" ? "例如：先验证授权域名的响应，不要扩展范围" : "例如：该方向与现有结果重复"} /><div className="workspace-actions"><button type="button" className="workspace-secondary" disabled={busy || !actionMessage.trim()} onClick={() => void intentCommand(intentAction.id,intentAction.name)}>确认</button><button type="button" className="text-button" onClick={() => setIntentAction(null)}>取消</button></div></div>}
                 <div className="simple-list">{runs.map((item) => <div key={item.id}><span className="state-tag subtle">{runStatuses[item.status] || item.status}</span><strong>{agentRoles[item.role] || item.role} · Prompt v{item.prompt_version}</strong><small>{item.error_class ? (modelErrors[item.error_class] || item.error_class) : new Date(item.started_at).toLocaleString("zh-CN")}</small><button type="button" className="text-button" onClick={() => void showRun(item.id)}>查看记录</button></div>)}</div>
-                {runDetail && <div className="run-transcript"><div className="section-row"><h3>{agentRoles[runDetail.run.role] || runDetail.run.role} 运行记录</h3><button type="button" className="text-button" onClick={() => setRunDetail(null)}>收起</button></div><p>模型尝试：{runDetail.attempts.map((item) => `${runStatuses[item.status] || item.status}${item.error_class ? ` (${modelErrors[item.error_class] || item.error_class})` : ""} · ${item.input_tokens}/${item.output_tokens} Token${item.estimated ? "（估算）" : ""}`).join("；") || "暂无"}</p>{runDetail.messages.map((item) => <div key={item.ordinal}><strong>{item.role}{item.trust_level === "untrusted_observation" ? " · 不可信观察" : ""}</strong><pre>{item.content}</pre></div>)}</div>}
+                {runDetail && <div className="run-transcript" id="agent-run-transcript"><div className="section-row"><h3>{agentRoles[runDetail.run.role] || runDetail.run.role} 运行记录</h3><button type="button" className="text-button" onClick={() => setRunDetail(null)}>收起</button></div><p>模型尝试：{runDetail.attempts.map((item) => `${runStatuses[item.status] || item.status}${item.error_class ? ` (${modelErrors[item.error_class] || item.error_class})` : ""} · ${item.input_tokens}/${item.output_tokens} Token${item.estimated ? "（估算）" : ""}`).join("；") || "暂无"}</p>{runDetail.messages.map((item) => <div key={item.ordinal}><strong>{item.role}{item.trust_level === "untrusted_observation" ? " · 不可信观察" : ""}</strong><pre>{item.content}</pre></div>)}</div>}
               </section>}
               <section className="workspace-card"><h2>执行记录搜索</h2><p>搜索本任务已持久化的执行者消息，点击结果可查看完整记录。</p><div className="workspace-actions"><input aria-label="搜索执行记录" value={traceQuery} onChange={(event) => setTraceQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchTraces(); }} placeholder="输入关键词" maxLength={200} /><button type="button" className="workspace-secondary" onClick={() => void searchTraces()}>搜索</button></div><div className="simple-list">{traces.map((hit) => <div key={`${hit.run_id}-${hit.ordinal}`}><strong>{hit.role} · {new Date(hit.created_at).toLocaleString("zh-CN")}</strong><small>{hit.excerpt}</small><button type="button" className="text-button" onClick={() => void showRun(hit.run_id)}>查看完整记录</button></div>)}</div></section>
               <section className="workspace-card">
                 <div className="section-row"><div><h2>工具调用</h2><p>查看授权判断、执行结果与完整输出。</p></div><span className="state-tag subtle">{toolCalls.length} 次</span></div>
-                {toolCalls.length === 0 ? <p className="empty-small">当前任务还没有工具调用</p> : <div className="simple-list">{toolCalls.map((call) => <div key={call.id}>
+                {toolCalls.length === 0 ? <p className="empty-small">当前任务还没有工具调用</p> : <div className="simple-list">{toolCalls.map((call) => <div key={call.id} id={`tool-call-${call.id}`}>
                   <span className={`state-tag ${call.status === "blocked" ? "danger" : "subtle"}`}>{toolStatuses[call.status] || call.status}</span>
                   <strong>{call.name}</strong><small>{safeToolInput(call)}</small>
                   <small>Scope v{call.scope_version} · {new Date(call.created_at).toLocaleString("zh-CN")}</small>
                   {(call.policy_reason || call.summary) && <small>{call.policy_reason || call.summary}</small>}
+                  {call.evidence_count>0&&<a className="workspace-link" href={`/findings/?task=${detail.task.id}&tab=findings`}>关联 Finding 证据 {call.evidence_count} 条</a>}
                   {call.output?.remote_ip && <small>实际连接 IP：{call.output.remote_ip}</small>}
                   {call.output?.preview && <details><summary>查看输出片段</summary><pre>{call.output.preview}</pre></details>}
                   {call.status === "succeeded" && <a className="workspace-link" href={`/api/v1/tool-calls/${call.id}/output`} target="_blank" rel="noopener noreferrer">下载完整输出</a>}
                 </div>)}</div>}
               </section>
+              <section className="workspace-card"><div className="section-row"><div><h2>策略阻断</h2><p>被策略拦截的工具调用及原因。</p></div><span className="state-tag subtle">{policyBlocks.length} 条</span></div>{policyBlocks.length?<div className="simple-list">{policyBlocks.map(block=><div key={block.id}><strong>{block.tool}</strong><small>{block.reason||block.summary||"策略拒绝"}</small><small>{new Date(block.created_at).toLocaleString("zh-CN")}</small></div>)}</div>:<p className="empty-small">当前没有策略阻断记录</p>}<div className="workspace-actions"><a className="workspace-link" href={`/conversation/?task=${detail.task.id}`}>打开任务会话</a><a className="workspace-link" href={`/workspace/?task=${detail.task.id}`}>查看任务文件</a></div></section>
+              <section className="workspace-card"><div className="section-row"><div><h2>实时动态</h2><p>事件流与历史按事件 ID 合并。</p></div><span className="state-tag subtle">{activities.length} 条</span></div><div className="simple-list phase6-activity-list">{activities.map(item=><div key={item.event_id}><strong>{item.summary}</strong><small>{item.kind} · {new Date(item.occurred_at).toLocaleString("zh-CN")}</small></div>)}{!activities.length&&<p className="empty-small">暂无任务动态</p>}</div></section>
               {approvals.some((item) => item.status === "pending") && <section className="workspace-card"><h2>待审批工具</h2><p>仅管理员可以批准会写入或执行命令的调用。</p><div className="simple-list">{approvals.filter((item) => item.status === "pending").map((item) => <div key={item.id}><strong>{item.tool_name}</strong><small>工具调用 {item.tool_call_id}</small>{viewer?.role === "admin" && <><input aria-label="审批说明" value={approvalReason} onChange={(event) => setApprovalReason(event.target.value)} placeholder="拒绝时填写原因" maxLength={4000} /><div className="workspace-actions"><button type="button" className="workspace-secondary" disabled={busy} onClick={() => void decideApproval(item.id, true)}>批准</button><button type="button" className="text-button" disabled={busy || !approvalReason.trim()} onClick={() => void decideApproval(item.id, false)}>拒绝</button></div></>}</div>)}</div></section>}
               {viewer?.role === "admin" && <section className="workspace-card"><h2>Worker 工具</h2><p>关闭后，后续运行无法调用该工具。</p><div className="simple-list">{Object.entries(toolBindings).map(([name, enabled]) => <div key={name}><strong>{name}</strong><button type="button" className="workspace-secondary" disabled={busy} onClick={() => void toggleTool(name, !enabled)}>{enabled ? "已启用 · 点击关闭" : "已关闭 · 点击启用"}</button></div>)}</div></section>}
               <section className="workspace-card">
@@ -922,7 +949,7 @@ function TaskWorkspace() {
                 <p className="muted">
                   从根事实延伸到目标；后续运行产生的事实会继续写入这里。
                 </p>
-                <ExplorationGraph graph={graph} />
+                <ExplorationGraph graph={graph} onRun={async id=>{await showRun(id);window.setTimeout(()=>document.getElementById("agent-run-transcript")?.scrollIntoView({behavior:"smooth"}),50);}} />
               </section>
               <a href="/assets/" className="workspace-link">
                 查看全局资产 <ArrowRight size={15} />
@@ -965,12 +992,12 @@ function TaskWorkspace() {
               </button>
             </div>
           ) : (
-            <div className="task-list">
-              {tasks.map((item) => (
+            <><div className="phase6-task-filters"><input aria-label="搜索任务" value={filterText} onChange={e=>setFilterText(e.target.value)} placeholder="搜索任务名称"/><select aria-label="任务状态" value={filterStatus} onChange={e=>setFilterStatus(e.target.value)}><option value="">全部状态</option>{Object.entries(statusName).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select><span>匹配 {tasks.filter(item=>(!filterStatus||item.status===filterStatus)&&item.title.toLowerCase().includes(filterText.trim().toLowerCase())).length} 个</span></div><div className="workspace-actions"><button className="workspace-secondary" type="button" disabled={busy||!tasks.some(item=>selectedTasks.has(item.id)&&item.status==="running")} onClick={()=>void bulkCommand("pause")}>批量暂停</button><button className="text-button danger" type="button" disabled={busy||!tasks.some(item=>selectedTasks.has(item.id)&&item.status==="running")} onClick={()=>void bulkCommand("cancel")}>批量取消</button></div><div className="task-list">
+              {tasks.filter(item=>(!filterStatus||item.status===filterStatus)&&item.title.toLowerCase().includes(filterText.trim().toLowerCase())).map((item) => (
+                <div className="phase6-task-row" key={item.id}><input type="checkbox" aria-label={`选择任务 ${item.title}`} checked={selectedTasks.has(item.id)} onChange={e=>{const next=new Set(selectedTasks);if(e.target.checked)next.add(item.id);else next.delete(item.id);setSelectedTasks(next);}}/>
                 <button
                   type="button"
                   onClick={() => void open(item.id)}
-                  key={item.id}
                 >
                   <span className="state-tag">
                     {statusName[item.status] || item.status}
@@ -983,9 +1010,9 @@ function TaskWorkspace() {
                     {new Date(item.updated_at).toLocaleDateString("zh-CN")}
                   </span>
                   <ArrowRight size={17} />
-                </button>
+                </button></div>
               ))}
-            </div>
+            </div></>
           )}
         </section>
       )}
@@ -993,7 +1020,7 @@ function TaskWorkspace() {
   );
 }
 
-function ExplorationGraph({ graph }: { graph: Graph | null }) {
+function ExplorationGraph({ graph, onRun }: { graph: Graph | null; onRun: (id:string)=>Promise<void> }) {
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   if (!graph) return <div className="workspace-loading">正在加载探索图…</div>;
   const byId = new Map(graph.nodes.map((node) => [node.id, node]));
@@ -1034,7 +1061,7 @@ function ExplorationGraph({ graph }: { graph: Graph | null }) {
         })}
       </svg>
     </div>
-    {chosen && <div className="exploration-selected"><span className="state-tag subtle">{names[chosen.kind] || chosen.kind} · {chosen.state}</span><strong>{chosen.summary || "任务根事实"}</strong>{graph.anchors.filter((anchor) => anchor.node_id === chosen.id).map((anchor) => <small key={anchor.asset_id}>关联资产：{anchor.asset_kind} · {anchor.asset_value}</small>)}</div>}
+    {chosen && <div className="exploration-selected"><span className="state-tag subtle">{names[chosen.kind] || chosen.kind} · {chosen.state}</span><strong>{chosen.summary || "任务根事实"}</strong>{chosen.source_intent_id&&<small>来源方向：{chosen.source_intent_id}</small>}{chosen.run_id&&<button className="text-button" type="button" onClick={()=>void onRun(chosen.run_id!)}>查看来源 Agent Run</button>}{chosen.tool_call_id&&<a className="workspace-link" href={`#tool-call-${chosen.tool_call_id}`}>跳转到来源工具调用</a>}{graph.anchors.filter((anchor) => anchor.node_id === chosen.id).map((anchor) => <small key={anchor.asset_id}>关联资产：{anchor.asset_kind} · {anchor.asset_value}</small>)}</div>}
     <div className="form-hint">{graph.edges.length} 条血缘边 · {graph.anchors.length} 个资产锚点。点击节点查看详情。</div>
   </div>;
 }
