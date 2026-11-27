@@ -1,9 +1,13 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
+	"github.com/X9st/TianFaSRC/internal/agent"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type phase3API struct{ phase1API }
@@ -39,6 +43,102 @@ func (api phase3API) routes(mux *http.ServeMux) {
 		writeProblem(w, r, 404, "route-not-found", "接口不存在", "操作不存在")
 	})
 	mux.HandleFunc("GET /api/v1/tasks/{id}/worker-traces", api.searchTraces)
+	mux.HandleFunc("GET /api/v1/tasks/{id}/worker-budgets", api.listWorkerBudgets)
+	mux.HandleFunc("GET /api/v1/tasks/{id}/events", api.streamTaskEvents)
+}
+
+func (api phase3API) streamTaskEvents(w http.ResponseWriter, r *http.Request) {
+	user, _, ok := api.principal(w, r)
+	if !ok {
+		return
+	}
+	if _, err := api.tasks.Get(r.Context(), user.OrganizationID, r.PathValue("id")); err != nil {
+		apiError(w, r, err)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeProblem(w, r, 500, "stream-unavailable", "事件流不可用", "服务端不支持流式输出")
+		return
+	}
+	cursor := r.Header.Get("Last-Event-ID")
+	if cursor == "" {
+		cursor = r.URL.Query().Get("after")
+	}
+	var after time.Time
+	var afterID string
+	if cursor != "" {
+		err := api.tasks.Pool.QueryRow(r.Context(), `SELECT occurred_at,id FROM domain_events WHERE id=$1 AND task_id=$2 AND organization_id=$3`, cursor, r.PathValue("id"), user.OrganizationID).Scan(&after, &afterID)
+		if err != nil {
+			writeProblem(w, r, 400, "invalid-cursor", "事件位置无效", "请刷新任务页面")
+			return
+		}
+	} else {
+		after = time.Now()
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("X-Accel-Buffering", "no")
+	fmt.Fprint(w, ": connected\n\n")
+	flusher.Flush()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	timeout := time.NewTimer(30 * time.Second)
+	defer timeout.Stop()
+	for {
+		rows, err := api.tasks.Pool.Query(r.Context(), `SELECT id,event_type,occurred_at FROM domain_events WHERE task_id=$1 AND organization_id=$2 AND (occurred_at,id)>($3,$4::uuid) ORDER BY occurred_at,id LIMIT 100`, r.PathValue("id"), user.OrganizationID, after, coalesceUUID(afterID))
+		if err != nil {
+			return
+		}
+		for rows.Next() {
+			var id, kind string
+			var at time.Time
+			if rows.Scan(&id, &kind, &at) != nil {
+				rows.Close()
+				return
+			}
+			payload, _ := json.Marshal(map[string]string{"id": id, "kind": kind})
+			fmt.Fprintf(w, "id: %s\nevent: change\ndata: %s\n\n", id, payload)
+			after, afterID = at, id
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return
+		}
+		flusher.Flush()
+		select {
+		case <-r.Context().Done():
+			return
+		case <-timeout.C:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func coalesceUUID(value string) string {
+	if value == "" {
+		return "00000000-0000-0000-0000-000000000000"
+	}
+	return value
+}
+
+func (api phase3API) listWorkerBudgets(w http.ResponseWriter, r *http.Request) {
+	user, _, ok := api.principal(w, r)
+	if !ok {
+		return
+	}
+	if _, err := api.tasks.Get(r.Context(), user.OrganizationID, r.PathValue("id")); err != nil {
+		apiError(w, r, err)
+		return
+	}
+	items, err := agent.ListWorkerBudgets(r.Context(), api.scheduler.Engine.Pool, user.OrganizationID, r.PathValue("id"))
+	if err != nil {
+		apiError(w, r, err)
+		return
+	}
+	writeData(w, r, 200, items)
 }
 
 func (api phase1API) controlTask(w http.ResponseWriter, r *http.Request, command string) {

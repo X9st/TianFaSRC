@@ -271,6 +271,12 @@ func (e Engine) runRoleOn(ctx context.Context, orgID, actorID, taskID, intentID,
 		if err != nil {
 			return "", err
 		}
+		if role == "worker" {
+			_, err = e.Pool.Exec(ctx, `INSERT INTO worker_run_budgets(run_id,organization_id,task_id,intent_id,max_model_rounds,max_tool_calls,max_tokens,max_seconds,reason) SELECT $1,$2,$3,$4,budget_model_rounds,budget_tool_calls,budget_tokens,budget_seconds,budget_reason FROM task_intents WHERE id=$4`, runID, orgID, taskID, intentID)
+			if err != nil {
+				return "", err
+			}
+		}
 	}
 	messages := []llm.Message{{Role: "system", Content: llm.SystemPrompt(prompt)}, {Role: "user", Content: contextText}}
 	for i, m := range messages {
@@ -327,12 +333,17 @@ func (e Engine) saveMessage(ctx context.Context, runID string, ordinal int, role
 
 type planOutput struct {
 	Intents []struct {
-		GoalID          string `json:"goal_id"`
-		Objective       string `json:"objective"`
-		SuccessCriteria string `json:"success_criteria"`
-		TodoKey         string `json:"todo_key"`
-		Priority        *int   `json:"priority"`
+		GoalID          string          `json:"goal_id"`
+		Objective       string          `json:"objective"`
+		SuccessCriteria string          `json:"success_criteria"`
+		TodoKey         string          `json:"todo_key"`
+		Priority        *int            `json:"priority"`
+		WorkerBudget    *BudgetDecision `json:"worker_budget"`
 	} `json:"intents"`
+	BudgetAdjustments []struct {
+		IntentID     string         `json:"intent_id"`
+		WorkerBudget BudgetDecision `json:"worker_budget"`
+	} `json:"budget_adjustments"`
 	Todos []struct {
 		Key       string   `json:"key"`
 		Title     string   `json:"title"`
@@ -425,14 +436,18 @@ func (e Engine) insertIntents(ctx context.Context, orgID, taskID, raw string, li
 		return nil, fmt.Errorf("%w: planner output is not structured JSON: %v", llm.ErrInvalid, err)
 	}
 	var taskStatus string
-	if err:=e.Pool.QueryRow(ctx,`SELECT status FROM tasks WHERE id=$1 AND organization_id=$2`,taskID,orgID).Scan(&taskStatus);err!=nil{return nil,err}
-	if taskStatus!="running"{return nil,task.ErrConflict}
+	if err := e.Pool.QueryRow(ctx, `SELECT status FROM tasks WHERE id=$1 AND organization_id=$2`, taskID, orgID).Scan(&taskStatus); err != nil {
+		return nil, err
+	}
+	if taskStatus != "running" {
+		return nil, task.ErrConflict
+	}
 	for _, proof := range plan.Proofs {
 		if err := e.ProveGoal(ctx, orgID, taskID, proof.GoalID, proof.EvidenceNodeIDs); err != nil {
 			return nil, err
 		}
 	}
-	if len(plan.Intents) == 0 && len(plan.Todos) == 0 && len(plan.Steers) == 0 && len(plan.Stops) == 0 {
+	if len(plan.Intents) == 0 && len(plan.Todos) == 0 && len(plan.Steers) == 0 && len(plan.Stops) == 0 && len(plan.BudgetAdjustments) == 0 {
 		if strings.TrimSpace(plan.PlanningBlocked) == "" && len(plan.Proofs) == 0 {
 			return nil, fmt.Errorf("%w: planner produced neither intent nor planning_blocked", llm.ErrInvalid)
 		}
@@ -447,9 +462,33 @@ func (e Engine) insertIntents(ctx context.Context, orgID, taskID, raw string, li
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	if err=tx.QueryRow(ctx,`SELECT status FROM tasks WHERE id=$1 AND organization_id=$2 FOR UPDATE`,taskID,orgID).Scan(&taskStatus);err!=nil{return nil,err}
-	if taskStatus!="running"{return nil,task.ErrConflict}
+	if err = tx.QueryRow(ctx, `SELECT status FROM tasks WHERE id=$1 AND organization_id=$2 FOR UPDATE`, taskID, orgID).Scan(&taskStatus); err != nil {
+		return nil, err
+	}
+	if taskStatus != "running" {
+		return nil, task.ErrConflict
+	}
 	out := []Intent{}
+	for _, adjustment := range plan.BudgetAdjustments {
+		b := adjustment.WorkerBudget
+		if !b.Valid() {
+			return nil, llm.ErrInvalid
+		}
+		tag, updateErr := tx.Exec(ctx, `UPDATE task_intents SET budget_model_rounds=$3,budget_tool_calls=$4,budget_tokens=$5,budget_seconds=$6,budget_reason=$7,updated_at=now() WHERE id=$1 AND task_id=$2 AND status IN ('open','leased','running','blocked')`, adjustment.IntentID, taskID, b.ModelRounds, b.ToolCalls, b.Tokens, b.Seconds, strings.TrimSpace(b.Reason))
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		if tag.RowsAffected() != 1 {
+			return nil, llm.ErrInvalid
+		}
+		_, updateErr = tx.Exec(ctx, `UPDATE worker_run_budgets SET max_model_rounds=$2,max_tool_calls=$3,max_tokens=$4,max_seconds=$5,reason=$6,updated_at=now() WHERE intent_id=$1 AND run_id IN (SELECT id FROM agent_runs WHERE status='running') AND model_rounds_used<=$2 AND tool_calls_used<=$3 AND input_tokens_used+output_tokens_used<=$4`, adjustment.IntentID, b.ModelRounds, b.ToolCalls, b.Tokens, b.Seconds, strings.TrimSpace(b.Reason))
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		if err = event(ctx, tx, orgID, taskID, "worker.budget_adjusted", map[string]any{"intent_id": adjustment.IntentID, "budget": b}); err != nil {
+			return nil, err
+		}
+	}
 	for _, steer := range plan.Steers {
 		message := strings.TrimSpace(steer.Message)
 		if message == "" || len(message) > 4000 {
@@ -633,7 +672,14 @@ func (e Engine) insertIntents(ctx context.Context, orgID, taskID, raw string, li
 		if err != nil {
 			return nil, err
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO task_intents(id,task_id,goal_id,objective,success_criteria,dedup_key,todo_id,priority) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, id, taskID, candidate.GoalID, objective, criteria, key, todoRef, priority)
+		budget := defaultBudget(priority, 1)
+		if candidate.WorkerBudget != nil {
+			budget = *candidate.WorkerBudget
+			if !budget.Valid() {
+				return nil, llm.ErrInvalid
+			}
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO task_intents(id,task_id,goal_id,objective,success_criteria,dedup_key,todo_id,priority,budget_model_rounds,budget_tool_calls,budget_tokens,budget_seconds,budget_reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, id, taskID, candidate.GoalID, objective, criteria, key, todoRef, priority, budget.ModelRounds, budget.ToolCalls, budget.Tokens, budget.Seconds, strings.TrimSpace(budget.Reason))
 		if err != nil {
 			return nil, err
 		}

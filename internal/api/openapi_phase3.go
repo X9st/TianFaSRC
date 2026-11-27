@@ -13,6 +13,7 @@ func addPhase3OpenAPI(spec map[string]any) {
 	schemas["Todo"] = obj([]string{"id", "title", "status", "depends_on", "created_at"}, map[string]any{"id": id, "title": str, "detail": str, "status": str, "depends_on": arr(id), "intent_id": id, "created_at": map[string]any{"type": "string", "format": "date-time"}})
 	schemas["TodoWrite"] = obj([]string{"title"}, map[string]any{"title": str, "detail": str, "depends_on": arr(id)})
 	schemas["TraceHit"] = obj([]string{"run_id", "intent_id", "ordinal", "role", "excerpt", "created_at"}, map[string]any{"run_id": id, "intent_id": id, "ordinal": map[string]any{"type": "integer"}, "role": str, "excerpt": str, "created_at": map[string]any{"type": "string", "format": "date-time"}})
+	schemas["WorkerBudget"] = obj([]string{"run_id", "intent_id", "task_id", "max_model_rounds", "max_tool_calls", "max_tokens", "max_seconds", "model_rounds_used", "tool_calls_used", "input_tokens_used", "output_tokens_used", "reason", "started_at"}, map[string]any{"run_id": id, "intent_id": id, "task_id": id, "max_model_rounds": map[string]any{"type": "integer"}, "max_tool_calls": map[string]any{"type": "integer"}, "max_tokens": map[string]any{"type": "integer"}, "max_seconds": map[string]any{"type": "integer"}, "model_rounds_used": map[string]any{"type": "integer"}, "tool_calls_used": map[string]any{"type": "integer"}, "input_tokens_used": map[string]any{"type": "integer"}, "output_tokens_used": map[string]any{"type": "integer"}, "reason": str, "started_at": map[string]any{"type": "string", "format": "date-time"}})
 	problem := map[string]any{"description": "错误", "content": map[string]any{"application/problem+json": map[string]any{"schema": ref("Problem")}}}
 	response := func(schema any) map[string]any {
 		return map[string]any{"description": "成功", "content": map[string]any{"application/json": map[string]any{"schema": obj([]string{"data", "meta"}, map[string]any{"data": schema, "meta": obj([]string{"request_id"}, map[string]any{"request_id": str})})}}}
@@ -61,4 +62,8 @@ func addPhase3OpenAPI(spec map[string]any) {
 		responses["204"] = map[string]any{"description": "操作已接受"}
 	}
 	add("/api/v1/tasks/{id}/worker-traces", "get", "searchWorkerTraces", "检索本任务执行记录", arr(ref("TraceHit")), nil, []any{pathParam("id"), map[string]any{"name": "q", "in": "query", "schema": str}, map[string]any{"name": "exclude_run_id", "in": "query", "schema": id}, map[string]any{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer"}}})
+	add("/api/v1/tasks/{id}/worker-budgets", "get", "listWorkerBudgets", "查看 Worker 独立预算及用量", arr(ref("WorkerBudget")), nil, []any{pathParam("id")})
+	add("/api/v1/tasks/{id}/events", "get", "streamTaskEvents", "订阅任务事件", obj(nil, nil), nil, []any{pathParam("id"), map[string]any{"name": "Last-Event-ID", "in": "header", "schema": id}})
+	eventResponses := paths["/api/v1/tasks/{id}/events"].(map[string]any)["get"].(map[string]any)["responses"].(map[string]any)
+	eventResponses["200"] = map[string]any{"description": "SSE 任务事件流", "content": map[string]any{"text/event-stream": map[string]any{"schema": str}}}
 }

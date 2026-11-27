@@ -18,7 +18,7 @@ export default function WorkspaceShell({
   section,
   children,
 }: {
-  section: "tasks" | "assets" | "users" | "models" | "tools" | "findings";
+  section: "dashboard" | "tasks" | "assets" | "users" | "models" | "tools" | "findings";
   children: React.ReactNode;
 }) {
   const [user, setUser] = useState<User | null>(null);
@@ -52,7 +52,7 @@ export default function WorkspaceShell({
         </a>
         <div className="workspace-nav-label">工作台</div>
         <nav aria-label="主导航">
-          <a href="/">
+          <a href="/" className={section === "dashboard" ? "selected" : ""} aria-current={section === "dashboard" ? "page" : undefined}>
             <LayoutDashboard size={18} />
             总览
           </a>

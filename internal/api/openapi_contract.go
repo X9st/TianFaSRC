@@ -17,7 +17,7 @@ func OpenAPI() ([]byte, error) {
 		"openapi": "3.1.0",
 		"info": map[string]any{
 			"title": "TianFa API", "version": "0.1.0",
-			"description": "授权安全验证平台 API。当前文档覆盖 Phase 0 至 Phase 5。",
+			"description": "授权安全验证平台 API。当前文档覆盖 Phase 0 至 Phase 6 已实现能力。",
 		},
 		"servers": []any{map[string]any{"url": "/"}},
 		"paths": map[string]any{

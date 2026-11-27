@@ -4,7 +4,7 @@
 [`全新自主安全验证平台-核心能力实现规格.md`](./全新自主安全验证平台-核心能力实现规格.md)
 为产品事实来源，按 Phase 逐步实现。
 
-当前交付：**Phase 5 — Traffic、Evidence 与 Finding 核心闭环**。Worker 可调用受控 HTTP、工作区、隔离命令、自定义只读 HTTP 与按 Skill 解锁的 MCP 工具；真实 HTTP 请求可写入流量索引，Reviewer 可将流量冻结为 Finding 证据并导出校验后的报告。任务预算配置已移除，历史用量继续统计。
+当前进度：**Phase 6 进行中 — 工作台与 Worker 独立预算**。总览页显示真实任务与服务状态；任务页通过事件流及时刷新，并展示每个 Worker Run 的独立额度及消耗。额度由 Planner 按探索方向给出和调整，服务端限制模型回合、工具次数、Token 与运行时长，用户无需配置。Phase 5 的 Traffic、Evidence 与 Finding 核心闭环继续可用。剩余项目见 [Phase 6 进展](docs/phase6-plan.md)。
 
 ## 本地启动
 

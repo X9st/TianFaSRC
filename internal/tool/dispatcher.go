@@ -27,6 +27,7 @@ import (
 var ErrApprovalRequired = errors.New("工具调用等待审批")
 var ErrInProgress = errors.New("工具调用正在执行")
 var ErrToolBlocked = errors.New("工具调用被策略阻断")
+var ErrWorkerBudgetExhausted = errors.New("Worker 工具预算已用尽")
 
 type Call struct {
 	OrganizationID string
@@ -235,8 +236,33 @@ func (d Dispatcher) Execute(ctx context.Context, call Call) (Outcome, error) {
 		return Outcome{}, err
 	}
 	id := identity.NewID()
-	inserted, err := d.Pool.Exec(ctx, `INSERT INTO tool_calls(id,organization_id,task_id,intent_id,run_id,agent_key,name,input,idempotency_key,scope_version,status) VALUES($1,$2,$3,$4,$5,'worker',$6,$7,$8,$9,'queued') ON CONFLICT(idempotency_key) DO NOTHING`, id, call.OrganizationID, call.TaskID, call.IntentID, call.RunID, call.Name, call.Input, call.IdempotencyKey, detail.Task.ScopeVersion)
+	reserveTx, err := d.Pool.Begin(ctx)
 	if err != nil {
+		return Outcome{}, err
+	}
+	defer reserveTx.Rollback(ctx)
+	var used, maximum int
+	var withinTime bool
+	err = reserveTx.QueryRow(ctx, `SELECT tool_calls_used,max_tool_calls,started_at+max_seconds*interval '1 second'>now() FROM worker_run_budgets WHERE run_id=$1 AND organization_id=$2 AND task_id=$3 AND intent_id=$4 FOR UPDATE`, call.RunID, call.OrganizationID, call.TaskID, call.IntentID).Scan(&used, &maximum, &withinTime)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Outcome{}, ErrWorkerBudgetExhausted
+	}
+	if err != nil {
+		return Outcome{}, err
+	}
+	if used >= maximum || !withinTime {
+		return Outcome{}, ErrWorkerBudgetExhausted
+	}
+	inserted, err := reserveTx.Exec(ctx, `INSERT INTO tool_calls(id,organization_id,task_id,intent_id,run_id,agent_key,name,input,idempotency_key,scope_version,status) VALUES($1,$2,$3,$4,$5,'worker',$6,$7,$8,$9,'queued') ON CONFLICT(idempotency_key) DO NOTHING`, id, call.OrganizationID, call.TaskID, call.IntentID, call.RunID, call.Name, call.Input, call.IdempotencyKey, detail.Task.ScopeVersion)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if inserted.RowsAffected() == 1 {
+		if _, err = reserveTx.Exec(ctx, `UPDATE worker_run_budgets SET tool_calls_used=tool_calls_used+1,updated_at=now() WHERE run_id=$1`, call.RunID); err != nil {
+			return Outcome{}, err
+		}
+	}
+	if err = reserveTx.Commit(ctx); err != nil {
 		return Outcome{}, err
 	}
 	var status, existingName, existingTask, existingIntent, existingOrg string

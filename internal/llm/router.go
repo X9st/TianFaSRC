@@ -15,6 +15,8 @@ type BlockedError struct {
 	Reason string
 }
 
+var ErrWorkerBudgetExhausted = errors.New("Worker 模型预算已用尽")
+
 func (e *BlockedError) Error() string { return e.Reason }
 
 type Router struct {
@@ -31,14 +33,48 @@ func (r Router) Complete(ctx context.Context, orgID, taskID, runID, role string,
 	if len(profiles) == 0 {
 		return Completion{}, &BlockedError{Reason: "没有可用的模型 Profile；请配置主备链"}
 	}
+	if role == "worker" {
+		// Reserve once per logical model round, including provider failover.
+		tag, err := r.Store.Pool.Exec(ctx, `UPDATE worker_run_budgets SET model_rounds_used=model_rounds_used+1,updated_at=now() WHERE run_id=$1 AND organization_id=$2 AND task_id=$3 AND model_rounds_used<max_model_rounds AND input_tokens_used+output_tokens_used<max_tokens AND started_at+max_seconds*interval '1 second'>now()`, runID, orgID, taskID)
+		if err != nil {
+			return Completion{}, err
+		}
+		if tag.RowsAffected() != 1 {
+			return Completion{}, ErrWorkerBudgetExhausted
+		}
+	}
 	var earliest *time.Time
 	var previous string
 	var lastClass string
 	var partial string
 	for i, p := range profiles {
+		if role == "worker" {
+			var remaining int
+			if err := r.Store.Pool.QueryRow(ctx, `SELECT max_tokens-input_tokens_used-output_tokens_used FROM worker_run_budgets WHERE run_id=$1`, runID).Scan(&remaining); err != nil {
+				return Completion{}, err
+			}
+			if remaining <= 0 {
+				return Completion{}, ErrWorkerBudgetExhausted
+			}
+			if p.MaxOutputTokens > remaining {
+				p.MaxOutputTokens = remaining
+			}
+		}
 		estimatedTokens := 0
 		for _, message := range messages {
 			estimatedTokens += len(message.Content)/4 + 8
+		}
+		if role == "worker" {
+			var remaining int
+			if err := r.Store.Pool.QueryRow(ctx, `SELECT max_tokens-input_tokens_used-output_tokens_used FROM worker_run_budgets WHERE run_id=$1`, runID).Scan(&remaining); err != nil {
+				return Completion{}, err
+			}
+			if estimatedTokens >= remaining {
+				return Completion{}, ErrWorkerBudgetExhausted
+			}
+			if p.MaxOutputTokens > remaining-estimatedTokens {
+				p.MaxOutputTokens = remaining - estimatedTokens
+			}
 		}
 		if estimatedTokens+p.MaxOutputTokens+512 >= p.ContextWindow {
 			continue
@@ -103,6 +139,13 @@ func (r Router) Complete(ctx context.Context, orgID, taskID, runID, role string,
 			_ = tx.Rollback(settleCtx)
 			cancel()
 			return Completion{}, err
+		}
+		if role == "worker" {
+			if _, err := tx.Exec(settleCtx, `UPDATE worker_run_budgets SET input_tokens_used=input_tokens_used+$2,output_tokens_used=output_tokens_used+$3,updated_at=now() WHERE run_id=$1`, runID, result.Usage.InputTokens, result.Usage.OutputTokens); err != nil {
+				_ = tx.Rollback(settleCtx)
+				cancel()
+				return Completion{}, err
+			}
 		}
 		if _, err := tx.Exec(settleCtx, `UPDATE agent_runs SET profile_id=$2 WHERE id=$1`, runID, p.ID); err != nil {
 			_ = tx.Rollback(settleCtx)

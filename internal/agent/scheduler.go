@@ -234,6 +234,10 @@ func (s Scheduler) ClaimWorker(ctx context.Context) (Claim, bool, error) {
 	if err != nil {
 		return Claim{}, false, err
 	}
+	_, err = tx.Exec(ctx, `INSERT INTO worker_run_budgets(run_id,organization_id,task_id,intent_id,max_model_rounds,max_tool_calls,max_tokens,max_seconds,reason) SELECT $1,$2,$3,$4,budget_model_rounds,budget_tool_calls,budget_tokens,budget_seconds,budget_reason FROM task_intents WHERE id=$4`, c.RunID, c.OrganizationID, c.TaskID, c.IntentID)
+	if err != nil {
+		return Claim{}, false, err
+	}
 	_, err = tx.Exec(ctx, `UPDATE task_intents SET status='leased',attempt=$2,last_dispatched_at=now(),updated_at=now(),blocking_reason=NULL WHERE id=$1`, c.IntentID, c.Attempt)
 	if err != nil {
 		return Claim{}, false, err

@@ -96,8 +96,8 @@ func TestMigrateIdempotentAndConcurrent(t *testing.T) {
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 6 {
-		t.Fatalf("migration count = %d, want 6", count)
+	if count != 7 {
+		t.Fatalf("migration count = %d, want 7", count)
 	}
 	var metadataExists bool
 	if err := pool.QueryRow(ctx, "SELECT to_regclass('system_metadata') IS NOT NULL").Scan(&metadataExists); err != nil {

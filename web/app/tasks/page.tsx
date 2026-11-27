@@ -53,6 +53,7 @@ type Intent = { id: string; objective: string; success_criteria: string; status:
 type Todo = { id: string; title: string; detail: string; status: string; depends_on: string[]; intent_id?: string };
 type TraceHit = { run_id: string; intent_id: string; ordinal: number; role: string; excerpt: string; created_at: string };
 type AgentRun = { id: string; role: string; status: string; prompt_version: number; error_class?: string; started_at: string };
+type WorkerBudget = { run_id: string; intent_id: string; max_model_rounds: number; max_tool_calls: number; max_tokens: number; max_seconds: number; model_rounds_used: number; tool_calls_used: number; input_tokens_used: number; output_tokens_used: number; reason: string; started_at: string };
 type RunDetail = { run: AgentRun; messages: { ordinal: number; role: string; trust_level: string; content: string }[]; attempts: { profile_id: string; status: string; error_class?: string; input_tokens: number; output_tokens: number; estimated: boolean }[] };
 type ToolCall = { id: string; name: string; input: Record<string, unknown>; status: string; summary?: string; policy_reason?: string; output?: { preview?: string; bytes?: number; remote_ip?: string }; scope_version: number; created_at: string };
 type Approval = { id: string; tool_call_id: string; task_id: string; tool_name: string; status: string; reason?: string; requested_at: string };
@@ -116,6 +117,7 @@ function TaskWorkspace() {
   const [routeRole, setRouteRole] = useState("planner");
   const [intents, setIntents] = useState<Intent[]>([]);
   const [runs, setRuns] = useState<AgentRun[]>([]);
+  const [workerBudgets, setWorkerBudgets] = useState<WorkerBudget[]>([]);
   const [todos, setTodos] = useState<Todo[]>([]);
   const [todoTitle, setTodoTitle] = useState("");
   const [todoDetail, setTodoDetail] = useState("");
@@ -155,7 +157,7 @@ function TaskWorkspace() {
       `/tasks/?id=${encodeURIComponent(id)}`,
     );
     try {
-      const [nextDetail, nextGraph, nextCoverage, nextModels, nextChain, nextDefault, nextRoutes, nextIntents, nextRuns, nextTodos, nextCalls, nextBindings, nextApprovals] = await Promise.all([
+      const [nextDetail, nextGraph, nextCoverage, nextModels, nextChain, nextDefault, nextRoutes, nextIntents, nextRuns, nextTodos, nextCalls, nextBindings, nextApprovals, nextBudgets] = await Promise.all([
         api<Detail>(`/tasks/${id}`),
         api<Graph>(`/tasks/${id}/graph`),
         api<Coverage>(`/tasks/${id}/coverage`),
@@ -169,6 +171,7 @@ function TaskWorkspace() {
         api<ToolCall[]>(`/tasks/${id}/tool-calls`),
         api<Record<string, boolean>>("/tools"),
         api<Approval[]>("/approvals").catch(() => []),
+        api<WorkerBudget[]>(`/tasks/${id}/worker-budgets`),
       ]);
       setDetail(nextDetail);
       setGraph(nextGraph);
@@ -176,6 +179,7 @@ function TaskWorkspace() {
       setModels(nextModels); setTaskChain(nextChain.profiles); setDefaultChain(nextDefault.profiles);
       setAgentRoutes({ decomposer: nextRoutes[0].profiles, planner: nextRoutes[1].profiles, worker: nextRoutes[2].profiles });
       setIntents(nextIntents); setRuns(nextRuns);
+      setWorkerBudgets(nextBudgets);
       setTodos(nextTodos);
       setToolCalls(nextCalls); setToolBindings(nextBindings); setApprovals(nextApprovals.filter((item) => item.task_id === id));
     } catch (cause) {
@@ -201,12 +205,30 @@ function TaskWorkspace() {
         api<Todo[]>(`/tasks/${selected}/todos`),
         api<ToolCall[]>(`/tasks/${selected}/tool-calls`),
         api<Approval[]>("/approvals").catch(() => []),
-      ]).then(([next, nextIntents, nextRuns, nextTodos, nextCalls, nextApprovals]) => {
+        api<WorkerBudget[]>(`/tasks/${selected}/worker-budgets`),
+      ]).then(([next, nextIntents, nextRuns, nextTodos, nextCalls, nextApprovals, nextBudgets]) => {
         setDetail(next); setIntents(nextIntents); setRuns(nextRuns); setTodos(nextTodos);
-        setToolCalls(nextCalls); setApprovals(nextApprovals.filter((item) => item.task_id === selected));
+        setToolCalls(nextCalls); setWorkerBudgets(nextBudgets); setApprovals(nextApprovals.filter((item) => item.task_id === selected));
       }).catch(() => {});
     }, 3000);
     return () => window.clearInterval(timer);
+  }, [selected, detail?.task.status]);
+
+  useEffect(() => {
+    if (!selected || !detail || !["queued", "running"].includes(detail.task.status)) return;
+    const seen = new Set<string>();
+    let pending: number | undefined;
+    const stream = new EventSource(`/api/v1/tasks/${selected}/events`);
+    stream.addEventListener("change", (event) => {
+      if (seen.has(event.lastEventId)) return;
+      seen.add(event.lastEventId);
+      if (seen.size > 200) seen.delete(seen.values().next().value!);
+      window.clearTimeout(pending);
+      pending = window.setTimeout(() => {
+        void Promise.all([api<Detail>(`/tasks/${selected}`),api<Graph>(`/tasks/${selected}/graph`),api<Coverage>(`/tasks/${selected}/coverage`),api<Intent[]>(`/tasks/${selected}/intents`),api<AgentRun[]>(`/tasks/${selected}/agent-runs`),api<WorkerBudget[]>(`/tasks/${selected}/worker-budgets`),api<ToolCall[]>(`/tasks/${selected}/tool-calls`)]).then(([next,nextGraph,nextCoverage,nextIntents,nextRuns,nextBudgets,nextCalls])=>{setDetail(next);setGraph(nextGraph);setCoverage(nextCoverage);setIntents(nextIntents);setRuns(nextRuns);setWorkerBudgets(nextBudgets);setToolCalls(nextCalls);}).catch(()=>{});
+      }, 200);
+    });
+    return () => { window.clearTimeout(pending); stream.close(); };
   }, [selected, detail?.task.status]);
 
   function resetForm() {
@@ -323,6 +345,7 @@ function TaskWorkspace() {
   }
   async function command(name: "pause" | "resume" | "cancel") {
     if (!detail) return;
+    if (name !== "resume" && !window.confirm(name === "cancel" ? `取消任务「${detail.task.title}」？正在运行的 Worker 会停止，已留存的证据仍可查看。` : `暂停任务「${detail.task.title}」？正在运行的 Worker 会停止，恢复后重新调度。`)) return;
     setBusy(true); setError("");
     try { await api(`/tasks/${detail.task.id}:${name}`, { method: "POST" }); await open(detail.task.id); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "操作失败"); }
@@ -330,6 +353,8 @@ function TaskWorkspace() {
   }
   async function intentCommand(id: string, name: "steer" | "stop" | "retry") {
     if (!detail) return;
+    if (name === "retry" && !window.confirm("重新运行这个方向？会创建新的 Worker Run 并消耗新的独立预算。")) return;
+    if (name === "stop" && !window.confirm("停止这个探索方向？当前 Worker 会结束，停止原因会写入审计记录。")) return;
     const message = actionMessage.trim();
     if (name !== "retry" && !message) return;
     setBusy(true); setError("");
@@ -362,6 +387,7 @@ function TaskWorkspace() {
   }
   async function decideApproval(id: string, approve: boolean) {
     if (!detail) return;
+    if (!window.confirm(approve ? "批准此工具调用？工具可能访问授权范围内的目标。" : "拒绝此工具调用？")) return;
     setBusy(true); setError("");
     try {
       await api(`/approvals/${id}:${approve ? "approve" : "reject"}`, { method: "POST", body: JSON.stringify({ reason: approvalReason.trim() }) });
@@ -677,6 +703,7 @@ function TaskWorkspace() {
                 <h2>Agent 运行与验证方向</h2><p>模型规划和真实观察分开记录。</p>
                 <div className="simple-list">{intents.map((item) => <div key={item.id}>
                   <span className="state-tag subtle">{intentStatuses[item.status] || item.status}</span><strong>{item.objective}</strong><small>{item.blocking_reason || item.stop_reason || item.success_criteria}</small><small>优先级 {item.priority} · 尝试 {item.attempt} 次</small>
+                  {workerBudgets.filter((budget) => budget.intent_id === item.id).map((budget) => <div key={budget.run_id} className="worker-budget-card"><strong>本次 Worker 执行额度</strong><small>{budget.reason}</small><div className="worker-budget-meters"><span>模型 {budget.model_rounds_used}/{budget.max_model_rounds} 回合</span><span>工具 {budget.tool_calls_used}/{budget.max_tool_calls} 次</span><span>Token {budget.input_tokens_used + budget.output_tokens_used}/{budget.max_tokens}</span><span>最长 {budget.max_seconds} 秒</span></div></div>)}
                   <div className="workspace-actions">
                     {["open","leased","running","blocked"].includes(item.status) && <button type="button" className="text-button" disabled={busy} onClick={() => { setIntentAction({ id: item.id, name: "steer" }); setActionMessage(""); }}>纠偏</button>}
                     {["open","leased","running","blocked","exhausted","paused"].includes(item.status) && <button type="button" className="text-button" disabled={busy} onClick={() => { setIntentAction({ id: item.id, name: "stop" }); setActionMessage(""); }}>停止</button>}
@@ -967,58 +994,49 @@ function TaskWorkspace() {
 }
 
 function ExplorationGraph({ graph }: { graph: Graph | null }) {
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
   if (!graph) return <div className="workspace-loading">正在加载探索图…</div>;
-  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
-  const parents = new Map(graph.edges.map((edge) => [edge.to_node_id, edge]));
-  const anchors = new Map<string, Graph["anchors"]>();
-  for (const anchor of graph.anchors)
-    anchors.set(anchor.node_id, [
-      ...(anchors.get(anchor.node_id) || []),
-      anchor,
-    ]);
-  const names: Record<string, string> = {
-    origin: "根事实",
-    goal: "目标",
-    intent: "探索方向",
-    fact: "事实",
-    finding: "安全问题",
-    hint: "线索",
-    digest: "摘要",
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const parent = new Map(graph.edges.map((edge) => [edge.to_node_id, edge.from_node_id]));
+  const depth = (id: string, seen = new Set<string>()): number => {
+    if (seen.has(id)) return 0;
+    seen.add(id);
+    const before = parent.get(id);
+    return before && byId.has(before) ? Math.min(6, depth(before, seen) + 1) : 0;
   };
-  return (
-    <>
-      <div className="graph-list">
-        {graph.nodes.map((node) => {
-          const parent = parents.get(node.id);
-          const parentNode = parent ? nodes.get(parent.from_node_id) : null;
-          return (
-            <div className="graph-entry" key={node.id}>
-              {parentNode && (
-                <div className="graph-parent">
-                  ↳ {names[parentNode.kind] || parentNode.kind} · {parent?.kind}
-                </div>
-              )}
-              <div className="graph-node">
-                <span className="graph-kind">
-                  {names[node.kind] || node.kind}
-                </span>
-                <strong>{node.summary || "任务根事实"}</strong>
-                <small>{node.state}</small>
-                {anchors.get(node.id)?.map((anchor) => (
-                  <span className="graph-anchor" key={anchor.asset_id}>
-                    资产 · {anchor.asset_kind}: {anchor.asset_value}
-                  </span>
-                ))}
-              </div>
-            </div>
-          );
+  const lanes = new Map<number, Graph["nodes"]>();
+  for (const node of graph.nodes) {
+    const level = depth(node.id);
+    lanes.set(level, [...(lanes.get(level) || []), node]);
+  }
+  const positions = new Map<string, { x: number; y: number }>();
+  for (const [level, nodes] of lanes) nodes.forEach((node, index) => positions.set(node.id, { x: 12 + index * 250, y: 16 + level * 104 }));
+  const width = Math.max(252, Math.max(0, ...[...lanes.values()].map((nodes) => nodes.length)) * 250 + 4);
+  const height = Math.max(92, (Math.max(0, ...lanes.keys()) + 1) * 104 + 4);
+  const chosen = byId.get(selectedNode || "") || graph.nodes[0];
+  const names: Record<string, string> = { origin: "根事实", goal: "目标", intent: "探索方向", fact: "事实", finding: "安全问题", hint: "线索", digest: "摘要" };
+  return <div className="exploration-visual">
+    <div className="exploration-canvas" role="region" aria-label="可滚动的探索血缘图" tabIndex={0}>
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${graph.nodes.length} 个节点、${graph.edges.length} 条血缘边`}>
+        {graph.edges.map((edge, index) => {
+          const from = positions.get(edge.from_node_id), to = positions.get(edge.to_node_id);
+          if (!from || !to) return null;
+          return <path key={index} d={`M${from.x + 113} ${from.y + 60} C${from.x + 113} ${from.y + 82},${to.x + 113} ${to.y - 22},${to.x + 113} ${to.y}`} fill="none" stroke="#9ab9ab" strokeWidth="2" />;
         })}
-      </div>
-      <div className="form-hint">
-        {graph.edges.length} 条血缘边 · {graph.anchors.length} 个资产锚点
-      </div>
-    </>
-  );
+        {graph.nodes.map((node) => {
+          const pos = positions.get(node.id)!;
+          const active = chosen?.id === node.id;
+          return <g key={node.id} onClick={() => setSelectedNode(node.id)} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setSelectedNode(node.id); }} aria-label={`${names[node.kind] || node.kind}：${node.summary || "任务根事实"}`} className="exploration-node" style={{ cursor: "pointer" }}>
+            <rect x={pos.x} y={pos.y} width="226" height="60" rx="10" fill={active ? "#e6f3ed" : "#fff"} stroke={active ? "#146b4d" : "#d8e3dc"} strokeWidth={active ? 2 : 1} />
+            <text x={pos.x + 12} y={pos.y + 19} fill="#146b4d" fontSize="11" fontWeight="700">{names[node.kind] || node.kind} · {node.state}</text>
+            <text x={pos.x + 12} y={pos.y + 40} fill="#18231f" fontSize="12">{(node.summary || "任务根事实").slice(0, 17)}</text>
+          </g>;
+        })}
+      </svg>
+    </div>
+    {chosen && <div className="exploration-selected"><span className="state-tag subtle">{names[chosen.kind] || chosen.kind} · {chosen.state}</span><strong>{chosen.summary || "任务根事实"}</strong>{graph.anchors.filter((anchor) => anchor.node_id === chosen.id).map((anchor) => <small key={anchor.asset_id}>关联资产：{anchor.asset_kind} · {anchor.asset_value}</small>)}</div>}
+    <div className="form-hint">{graph.edges.length} 条血缘边 · {graph.anchors.length} 个资产锚点。点击节点查看详情。</div>
+  </div>;
 }
 
 function ScopeEditor({
