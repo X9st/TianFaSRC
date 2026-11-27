@@ -20,6 +20,8 @@
 
 新增 `TestPhase7AutonomousHTTPFindingAndFailoverE2E`：从管理员 API 登录、创建两目标/授权范围、启动任务，到 Planner 并行派工、两个 Worker 访问本地靶场并创建可追溯 Fact/Finding、证明目标、任务完成，检查 API 状态、图、Finding 和 Activity。主 HTTP Stub 返回 402，备用 Profile 接管，独立尝试/用量及 UI 所用 Activity 接口均通过断言；连续 3 次重跑通过。它覆盖 E2E-01/02 的后端主链路，尚未覆盖纯浏览器创建任务、真实 Traffic/Evidence 绑定及完整 UI 操作。
 
+新增 `TestInjectedPageAndRedirectCannotExpandWorkerScope`：本地靶场页面诱导 Worker 访问越界环回地址，模型 Stub 照此发起请求；同一 Worker 随后遇到越界重定向，再改用范围内路径完成观察。两条越界路径均被程序阻断并写入审计，审计包含脱敏的原始请求目标、被阻断目标、解析 IP、命中的规则及原因。该测试覆盖 E2E-03 的后端主链路；浏览器展示与更多网络通路仍需单独验收。
+
 ## 7C：发布加固
 
 - 性能基线、可观测指标、安全与可访问性审计。

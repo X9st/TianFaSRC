@@ -36,23 +36,55 @@ type Target struct {
 	ScopeVersion int64
 }
 
+// Denial preserves the decision data needed to audit a rejected target.
+// The exact input remains in the restricted ToolCall record; audit consumers
+// receive a URL without credentials or query values.
+type Denial struct {
+	Cause       error
+	Rule        string
+	Target      string
+	ResolvedIPs []string
+}
+
+func (d *Denial) Error() string { return d.Cause.Error() }
+func (d *Denial) Unwrap() error { return d.Cause }
+
+func redactedTarget(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
+}
+
 func (e Enforcer) Authorize(ctx context.Context, raw string, entries []task.ScopeEntry, version int64) (Target, error) {
+	var addresses []netip.Addr
+	deny := func(cause error, rule string) (Target, error) {
+		ips := make([]string, 0, len(addresses))
+		for _, addr := range addresses {
+			ips = append(ips, addr.Unmap().String())
+		}
+		return Target{}, &Denial{Cause: cause, Rule: rule, Target: redactedTarget(raw), ResolvedIPs: ips}
+	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Opaque != "" || u.User != nil || u.Fragment != "" || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return Target{}, fmt.Errorf("%w: 无效 URL", ErrOutOfScope)
+		return deny(fmt.Errorf("%w: 无效 URL", ErrOutOfScope), "invalid_url")
 	}
 	if strings.ContainsAny(raw, "\\\x00") || strings.ContainsAny(u.EscapedPath(), "\\") {
-		return Target{}, fmt.Errorf("%w: 路径不明确", ErrOutOfScope)
+		return deny(fmt.Errorf("%w: 路径不明确", ErrOutOfScope), "ambiguous_path")
 	}
 	lowerPath := strings.ToLower(u.EscapedPath())
 	for _, fragment := range []string{"%2f", "%5c", "%25", "%2e", "%00"} {
 		if strings.Contains(lowerPath, fragment) {
-			return Target{}, fmt.Errorf("%w: 路径编码不明确", ErrOutOfScope)
+			return deny(fmt.Errorf("%w: 路径编码不明确", ErrOutOfScope), "ambiguous_encoding")
 		}
 	}
 	for _, segment := range strings.Split(u.EscapedPath(), "/") {
 		if segment == "." || segment == ".." {
-			return Target{}, fmt.Errorf("%w: 路径未规范化", ErrOutOfScope)
+			return deny(fmt.Errorf("%w: 路径未规范化", ErrOutOfScope), "unnormalized_path")
 		}
 	}
 	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
@@ -60,7 +92,7 @@ func (e Enforcer) Authorize(ctx context.Context, raw string, entries []task.Scop
 		host, err = idna.Lookup.ToASCII(host)
 	}
 	if err != nil || host == "" {
-		return Target{}, fmt.Errorf("%w: 无效主机名", ErrOutOfScope)
+		return deny(fmt.Errorf("%w: 无效主机名", ErrOutOfScope), "invalid_host")
 	}
 	port := 80
 	if u.Scheme == "https" {
@@ -69,13 +101,12 @@ func (e Enforcer) Authorize(ctx context.Context, raw string, entries []task.Scop
 	if u.Port() != "" {
 		port, err = strconv.Atoi(u.Port())
 		if err != nil || port < 1 || port > 65535 {
-			return Target{}, fmt.Errorf("%w: 无效端口", ErrOutOfScope)
+			return deny(fmt.Errorf("%w: 无效端口", ErrOutOfScope), "invalid_port")
 		}
 	}
 	if protectedHost(host, e.ProtectedHosts) {
-		return Target{}, ErrProtectedTarget
+		return deny(ErrProtectedTarget, "protected_host")
 	}
-	var addresses []netip.Addr
 	if ip, parseErr := netip.ParseAddr(host); parseErr == nil {
 		addresses = []netip.Addr{ip.Unmap()}
 		host = ip.Unmap().String()
@@ -86,7 +117,7 @@ func (e Enforcer) Authorize(ctx context.Context, raw string, entries []task.Scop
 		}
 		addresses, err = resolver(ctx, host)
 		if err != nil || len(addresses) == 0 {
-			return Target{}, fmt.Errorf("%w: DNS 解析失败", ErrOutOfScope)
+			return deny(fmt.Errorf("%w: DNS 解析失败", ErrOutOfScope), "dns_failed")
 		}
 	}
 	allowHost := false
@@ -98,24 +129,24 @@ func (e Enforcer) Authorize(ctx context.Context, raw string, entries []task.Scop
 	for _, addr := range addresses {
 		addr = addr.Unmap()
 		if !addr.IsValid() || addr.IsLinkLocalUnicast() || addr.IsMulticast() || addr.IsUnspecified() || (!e.TestOnlyAllowPrivate && (addr.IsPrivate() || addr.IsLoopback())) || slices.Contains(e.ProtectedIPs, addr) {
-			return Target{}, ErrProtectedTarget
+			return deny(ErrProtectedTarget, "protected_ip")
 		}
 		allowedIP := false
 		for _, entry := range entries {
 			if matches(entry, host, port, u.EscapedPath(), &addr, u.Scheme) {
 				if entry.Effect == "deny" {
-					return Target{}, ErrOutOfScope
+					return deny(ErrOutOfScope, "explicit_deny:"+entry.Kind+":"+entry.NormalizedValue)
 				}
 				allowedIP = true
 			}
 		}
 		if !allowHost && !allowedIP {
-			return Target{}, ErrOutOfScope
+			return deny(ErrOutOfScope, "allowlist_miss")
 		}
 	}
 	for _, entry := range entries {
 		if entry.Effect == "deny" && matches(entry, host, port, u.EscapedPath(), nil, u.Scheme) {
-			return Target{}, ErrOutOfScope
+			return deny(ErrOutOfScope, "explicit_deny:"+entry.Kind+":"+entry.NormalizedValue)
 		}
 	}
 	u.Host = net.JoinHostPort(host, strconv.Itoa(port))

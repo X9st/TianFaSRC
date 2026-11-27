@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -327,7 +328,7 @@ func (d Dispatcher) Execute(ctx context.Context, call Call) (Outcome, error) {
 		return d.block(ctx, call, id, "授权范围版本已改变")
 	}
 	if err := d.preflight(ctx, call, detail); err != nil {
-		return d.block(ctx, call, id, err.Error())
+		return d.blockPolicy(ctx, call, id, err)
 	}
 	tag, err := d.Pool.Exec(ctx, `UPDATE tool_calls SET status='running',run_id=$2,started_at=now() WHERE id=$1 AND status='policy_check'`, id, call.RunID)
 	if err != nil {
@@ -396,7 +397,7 @@ func (d Dispatcher) Execute(ctx context.Context, call Call) (Outcome, error) {
 	}
 	if executeErr != nil {
 		if errors.Is(executeErr, policy.ErrOutOfScope) || errors.Is(executeErr, policy.ErrProtectedTarget) {
-			return d.block(ctx, call, id, executeErr.Error())
+			return d.blockPolicy(ctx, call, id, executeErr)
 		}
 		_, _ = d.Pool.Exec(context.WithoutCancel(ctx), `UPDATE tool_calls SET status='failed',error_class='execution_failed',summary=$2,duration_ms=$3,completed_at=now() WHERE id=$1 AND status='running'`, id, executeErr.Error(), time.Since(started).Milliseconds())
 		_ = d.audit(context.WithoutCancel(ctx), call, id, "tool.failed", executeErr.Error())
@@ -527,6 +528,30 @@ func (d Dispatcher) enforceURLArguments(ctx context.Context, call Call, detail t
 }
 
 func (d Dispatcher) block(ctx context.Context, call Call, id, reason string) (Outcome, error) {
+	return d.blockDetailed(ctx, call, id, reason, map[string]any{"reason": reason, "tool": call.Name})
+}
+
+func (d Dispatcher) blockPolicy(ctx context.Context, call Call, id string, decisionErr error) (Outcome, error) {
+	metadata := map[string]any{"reason": decisionErr.Error(), "tool": call.Name}
+	if call.Name == "http.read" {
+		var input HTTPInput
+		if json.Unmarshal(call.Input, &input) == nil {
+			if parsed, err := url.Parse(input.URL); err == nil {
+				parsed.User, parsed.RawQuery, parsed.Fragment = nil, "", ""
+				metadata["requested_target"] = parsed.String()
+			}
+		}
+	}
+	var denial *policy.Denial
+	if errors.As(decisionErr, &denial) {
+		metadata["blocked_target"] = denial.Target
+		metadata["resolved_ips"] = denial.ResolvedIPs
+		metadata["rule"] = denial.Rule
+	}
+	return d.blockDetailed(ctx, call, id, decisionErr.Error(), metadata)
+}
+
+func (d Dispatcher) blockDetailed(ctx context.Context, call Call, id, reason string, metadata map[string]any) (Outcome, error) {
 	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	tx, err := d.Pool.Begin(settleCtx)
@@ -537,8 +562,8 @@ func (d Dispatcher) block(ctx context.Context, call Call, id, reason string) (Ou
 	if _, err = tx.Exec(settleCtx, `UPDATE tool_calls SET status='blocked',policy_reason=$2,summary=$2,completed_at=now() WHERE id=$1 AND status IN ('queued','policy_check','running')`, id, reason); err != nil {
 		return Outcome{}, err
 	}
-	metadata, _ := json.Marshal(map[string]string{"reason": reason, "tool": call.Name})
-	if _, err = tx.Exec(settleCtx, `INSERT INTO audit_log(id,organization_id,actor_user_id,action,resource_type,resource_id,detail) VALUES($1,$2,$3,'tool.policy_blocked','tool_call',$4,$5)`, identity.NewID(), call.OrganizationID, call.ActorID, id, metadata); err != nil {
+	encoded, _ := json.Marshal(metadata)
+	if _, err = tx.Exec(settleCtx, `INSERT INTO audit_log(id,organization_id,actor_user_id,action,resource_type,resource_id,detail) VALUES($1,$2,$3,'tool.policy_blocked','tool_call',$4,$5)`, identity.NewID(), call.OrganizationID, call.ActorID, id, encoded); err != nil {
 		return Outcome{}, err
 	}
 	if err = tx.Commit(settleCtx); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/X9st/TianFaSRC/internal/task"
@@ -74,5 +75,18 @@ func TestURLPrefixAndCIDR(t *testing.T) {
 	entries = []task.ScopeEntry{scope(t, "allow", "cidr", "203.0.113.0/24")}
 	if _, err := e.Authorize(ctx, "https://app.example.test/", entries, 1); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDeniedDecisionCarriesRuleAndRedactedTarget(t *testing.T) {
+	entry := scope(t, "allow", "ip", "127.0.0.1")
+	e := Enforcer{TestOnlyAllowPrivate: true}
+	_, err := e.Authorize(context.Background(), "http://127.0.0.2/private?token=secret", []task.ScopeEntry{entry}, 7)
+	var denial *Denial
+	if !errors.As(err, &denial) || !errors.Is(err, ErrOutOfScope) {
+		t.Fatalf("expected structured scope denial: %v", err)
+	}
+	if denial.Rule != "allowlist_miss" || denial.Target != "http://127.0.0.2/private" || len(denial.ResolvedIPs) != 1 || denial.ResolvedIPs[0] != "127.0.0.2" || strings.Contains(denial.Target, "secret") {
+		t.Fatalf("unsafe or incomplete decision: %+v", denial)
 	}
 }
