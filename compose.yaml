@@ -28,8 +28,8 @@ services:
       - "${TIANFA_HOST_PORT:-8080}:8080"
       - "127.0.0.1:${TIANFA_PROXY_HOST_PORT:-8081}:8081"
     volumes:
-      - ./data:/var/lib/tianfa
-      - ./skills:/app/skills:ro
+      - ${TIANFA_DATA_HOST_PATH:-./data}:/var/lib/tianfa
+      - ${TIANFA_SKILLS_HOST_PATH:-./skills}:/app/skills:ro
     restart: unless-stopped
 
 volumes:

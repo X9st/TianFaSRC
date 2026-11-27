@@ -18,11 +18,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/X9st/TianFaSRC/internal/backup"
 	"github.com/X9st/TianFaSRC/internal/blob"
 	"github.com/X9st/TianFaSRC/internal/finding"
+	"github.com/X9st/TianFaSRC/internal/identity"
 	"github.com/X9st/TianFaSRC/internal/policy"
 	"github.com/X9st/TianFaSRC/internal/recordproxy"
 	"github.com/X9st/TianFaSRC/internal/report"
+	"github.com/X9st/TianFaSRC/internal/secret"
 	"github.com/X9st/TianFaSRC/internal/task"
 	"github.com/X9st/TianFaSRC/internal/tool"
 	"github.com/X9st/TianFaSRC/internal/traffic"
@@ -264,9 +267,16 @@ func TestEvidenceSurvivesTrafficDeletionAndRejectsTampering(t *testing.T) {
 	if err != nil || !bytes.Contains(markdown, []byte("inconclusive")) {
 		t.Fatalf("report omitted retest history: %v", err)
 	}
+	verified, err := backup.Verify(ctx, scheduler.Engine.Pool, blobs.Root)
+	if err != nil || verified.EvidenceRefs == 0 || verified.BlobsVerified == 0 {
+		t.Fatalf("restored data verification: %+v %v", verified, err)
+	}
 	responsePath := filepath.Join(blobs.Root, "blobs", (*evidence.ResponseSHA256)[:2], *evidence.ResponseSHA256)
 	if err := os.WriteFile(responsePath, []byte("tampered"), 0600); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := backup.Verify(ctx, scheduler.Engine.Pool, blobs.Root); err == nil {
+		t.Fatal("backup verifier accepted tampered evidence")
 	}
 	if _, err := findingStore.ReadEvidence(ctx, orgID, evidence.BindingID, "response"); !errors.Is(err, blob.ErrCorrupt) {
 		t.Fatalf("tampered evidence accepted: %v", err)
@@ -290,5 +300,64 @@ func TestEvidenceSurvivesTrafficDeletionAndRejectsTampering(t *testing.T) {
 	current, err = reports.Get(ctx, orgID, taskID)
 	if err != nil || !current.Stale {
 		t.Fatalf("report should be stale after evidence removal: %+v %v", current, err)
+	}
+}
+
+func TestBackupVerifierRejectsWrongMasterKey(t *testing.T) {
+	scheduler, orgID, _, _ := schedulerFixture(t)
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := secret.Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretID := identity.NewID()
+	ciphertext, nonce, hint, err := store.Seal(orgID, secretID, "llm_api_key", "fixture-credential")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scheduler.Engine.Pool.Exec(ctx, `INSERT INTO secret_values(id,organization_id,kind,ciphertext,nonce,hint) VALUES($1,$2,'llm_api_key',$3,$4,$5)`, secretID, orgID, ciphertext, nonce, hint); err != nil {
+		t.Fatal(err)
+	}
+	if report, err := backup.Verify(ctx, scheduler.Engine.Pool, dataDir); err != nil || report.Secrets != 1 {
+		t.Fatalf("valid master key rejected: %+v %v", report, err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "secrets", "master.key"), bytes.Repeat([]byte{0x42}, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backup.Verify(ctx, scheduler.Engine.Pool, dataDir); err == nil {
+		t.Fatal("wrong master key accepted")
+	}
+}
+
+func TestFailedTrafficTransactionLeavesCollectableOrphans(t *testing.T) {
+	scheduler, orgID, _, _ := schedulerFixture(t)
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store := traffic.Store{Pool: scheduler.Engine.Pool, Blobs: blob.Store{Root: dataDir}}
+	request := []byte("GET /orphan HTTP/1.1\r\nHost: example.invalid\r\n\r\n")
+	response := []byte("HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\na")
+	_, err := store.Record(ctx, traffic.RecordInput{
+		OrganizationID: orgID, TaskID: identity.NewID(), Method: "GET", URL: "https://example.invalid/orphan", RemoteIP: "203.0.113.10", StatusCode: 200,
+		RequestRaw: request, ResponseRaw: response, RequestedAt: time.Now().Add(-time.Second), RespondedAt: time.Now(),
+	})
+	if err == nil {
+		t.Fatal("invalid task unexpectedly accepted")
+	}
+	for _, raw := range [][]byte{request, response} {
+		hash, putErr := store.Blobs.Put(ctx, raw)
+		if putErr != nil {
+			t.Fatal(putErr)
+		}
+		var rows int
+		if err := scheduler.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM blobs WHERE sha256=$1`, hash).Scan(&rows); err != nil || rows != 0 {
+			t.Fatalf("uncommitted blob reference: rows=%d err=%v", rows, err)
+		}
+	}
+	if count, err := store.Collect(ctx, time.Now().Add(-time.Hour)); err != nil || count != 0 {
+		t.Fatalf("orphan removed before grace period: %d %v", count, err)
+	}
+	if count, err := store.Collect(ctx, time.Now().Add(time.Hour)); err != nil || count != 2 {
+		t.Fatalf("orphan collection: %d %v", count, err)
 	}
 }

@@ -547,7 +547,7 @@ func (s Scheduler) Reconcile(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `SELECT l.intent_id,l.run_id,l.task_id,i.attempt,i.max_attempts,t.organization_id,t.status FROM worker_leases l JOIN task_intents i ON i.id=l.intent_id JOIN tasks t ON t.id=l.task_id WHERE l.expires_at<now() FOR UPDATE OF l SKIP LOCKED`)
+	rows, err := tx.Query(ctx, `SELECT l.intent_id,l.run_id,l.task_id,i.attempt,i.max_attempts,t.organization_id,t.status FROM worker_leases l JOIN task_intents i ON i.id=l.intent_id JOIN tasks t ON t.id=l.task_id WHERE l.expires_at<now() FOR UPDATE OF t,l SKIP LOCKED`)
 	if err != nil {
 		return 0, err
 	}

@@ -57,6 +57,10 @@ make dev-web
 
 API Key 使用数据目录 `secrets/master.key` 加密保存，该文件权限为 `0600`；部署备份必须同时保留数据库和此密钥文件。若数据库已存在加密凭据而密钥文件丢失，服务会拒绝启动。生产环境应限制数据目录访问。
 
+## 备份与恢复
+
+Compose 部署可运行 `make backup` 创建包含 PostgreSQL、Blob、工作区、Skill 和密钥材料的冷备份。脚本会短暂停止应用写入，在备份完成后恢复应用。备份目录包含敏感密钥，须限制访问并安全异地保存。恢复前先对备份运行 `make restore-drill BACKUP_DIR=/path/to/backup`；演练会在隔离的临时数据库中校验 Blob 哈希、引用计数和加密凭据，并启动服务检查就绪。完整部署、恢复和运维步骤见 [运维手册](docs/operations.md)。
+
 ## 验证
 
 ```bash

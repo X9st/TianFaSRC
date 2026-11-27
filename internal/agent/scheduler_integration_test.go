@@ -166,6 +166,54 @@ func TestConcurrentClaimsRecoveryAndFencing(t *testing.T) {
 	}
 }
 
+func TestPauseCancelAndReconcileRaceHasOneTerminalReason(t *testing.T) {
+	s, orgID, taskID, intentID := schedulerFixture(t)
+	ctx := context.Background()
+	var actorID string
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT created_by FROM tasks WHERE id=$1`, taskID).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.ClaimWorker(ctx); err != nil || !ok {
+		t.Fatalf("claim before control race: %v %v", ok, err)
+	}
+	if _, err := s.Engine.Pool.Exec(ctx, `UPDATE worker_leases SET expires_at=now()-interval '1 second' WHERE intent_id=$1`, intentID); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	results := make(chan error, 3)
+	var wg sync.WaitGroup
+	for _, operation := range []func() error{
+		func() error { return s.TaskCommand(ctx, orgID, actorID, taskID, "pause") },
+		func() error { return s.TaskCommand(ctx, orgID, actorID, taskID, "cancel") },
+		func() error { _, err := s.Reconcile(ctx); return err },
+	} {
+		wg.Add(1)
+		go func(operation func() error) { defer wg.Done(); <-start; results <- operation() }(operation)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	for err := range results {
+		if err != nil && !errors.Is(err, task.ErrConflict) {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var status, intentStatus string
+	var stopReason, blockingReason *string
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT t.status,i.status,i.stop_reason,i.blocking_reason FROM tasks t JOIN task_intents i ON i.task_id=t.id WHERE t.id=$1 AND i.id=$2`, taskID, intentID).Scan(&status, &intentStatus, &stopReason, &blockingReason); err != nil {
+		t.Fatal(err)
+	}
+	if status != "cancelled" || intentStatus != "stopped" {
+		t.Fatalf("task=%s intent=%s stop_reason=%v blocking_reason=%v", status, intentStatus, stopReason, blockingReason)
+	}
+	if (stopReason == nil || *stopReason != "任务已取消") && (blockingReason == nil || *blockingReason != "任务已取消") {
+		t.Fatalf("terminal reason missing: stop=%v blocking=%v", stopReason, blockingReason)
+	}
+}
+
 func TestPauseResumeAndMaxAttempts(t *testing.T) {
 	s, orgID, taskID, intentID := schedulerFixture(t)
 	ctx := context.Background()

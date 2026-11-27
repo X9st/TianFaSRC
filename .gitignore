@@ -3,6 +3,8 @@
 .env.*
 !.env.example
 data/
+backups/
+__pycache__/
 web/.next/
 web/out/
 web/node_modules/

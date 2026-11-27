@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"github.com/X9st/TianFaSRC/internal/agent"
 	"github.com/X9st/TianFaSRC/internal/api"
 	"github.com/X9st/TianFaSRC/internal/auth"
+	"github.com/X9st/TianFaSRC/internal/backup"
 	"github.com/X9st/TianFaSRC/internal/blob"
 	"github.com/X9st/TianFaSRC/internal/config"
 	"github.com/X9st/TianFaSRC/internal/llm"
@@ -44,6 +46,15 @@ func main() {
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	readinessOnly := len(os.Args) > 1 && os.Args[1] == "serve-readiness"
+	if len(os.Args) > 1 && os.Args[1] == "verify-data" && cfg.DatabaseURL == "" {
+		logger.Error("data verification requires TIANFA_DATABASE_URL")
+		os.Exit(1)
+	}
+	if readinessOnly && (!strings.HasPrefix(cfg.HTTPAddr, "127.0.0.1:") && !strings.HasPrefix(cfg.HTTPAddr, "[::1]:")) {
+		logger.Error("serve-readiness requires a loopback HTTP address")
+		os.Exit(1)
+	}
 
 	var pool *pgxpool.Pool
 	var secrets *secret.Store
@@ -57,6 +68,18 @@ func main() {
 			os.Exit(1)
 		}
 		defer pool.Close()
+		if len(os.Args) > 1 && os.Args[1] == "verify-data" {
+			report, verifyErr := backup.Verify(rootCtx, pool, cfg.DataDir)
+			if verifyErr != nil {
+				logger.Error("data verification failed", "error", verifyErr)
+				os.Exit(1)
+			}
+			if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+				logger.Error("write verification report", "error", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if err := postgres.Migrate(rootCtx, pool); err != nil {
 			logger.Error("run database migrations", "error", err)
 			os.Exit(1)
@@ -96,7 +119,7 @@ func main() {
 	} else {
 		logger.Warn("database is not configured; readiness will remain unavailable")
 	}
-	if pool != nil {
+	if pool != nil && !readinessOnly {
 		if scheduler != nil {
 			go scheduler.Run(rootCtx)
 		}
@@ -138,32 +161,39 @@ func main() {
 		}()
 	}
 
+	handler := api.NewHandler(api.Options{
+		Logger:    logger,
+		Version:   version,
+		Readiness: system.Readiness{Database: readinessDatabase(pool), DataDir: cfg.DataDir},
+		Pool:      pool,
+		Secrets:   secrets,
+		Scheduler: scheduler,
+		CACertificate: func() []byte {
+			if recordingCA != nil {
+				return recordingCA.Certificate
+			}
+			return nil
+		}(),
+	})
+	if readinessOnly {
+		limited := http.NewServeMux()
+		limited.Handle("GET "+api.LivePath, handler)
+		limited.Handle("GET "+api.ReadyPath, handler)
+		handler = limited
+	}
 	server := &http.Server{
-		Addr: cfg.HTTPAddr,
-		Handler: api.NewHandler(api.Options{
-			Logger:    logger,
-			Version:   version,
-			Readiness: system.Readiness{Database: readinessDatabase(pool), DataDir: cfg.DataDir},
-			Pool:      pool,
-			Secrets:   secrets,
-			Scheduler: scheduler,
-			CACertificate: func() []byte {
-				if recordingCA != nil {
-					return recordingCA.Certificate
-				}
-				return nil
-			}(),
-		}),
+		Addr:              cfg.HTTPAddr,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 
 	errCh := make(chan error, 2)
 	go func() {
-		logger.Info("server listening", "http_addr", cfg.HTTPAddr, "proxy_addr", cfg.ProxyAddr, "version", version)
+		logger.Info("server listening", "http_addr", cfg.HTTPAddr, "proxy_addr", cfg.ProxyAddr, "readiness_only", readinessOnly, "version", version)
 		errCh <- server.ListenAndServe()
 	}()
-	if proxyServer != nil {
+	if proxyServer != nil && !readinessOnly {
 		go func() { errCh <- proxyServer.ListenAndServe() }()
 	}
 

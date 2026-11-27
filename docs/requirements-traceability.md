@@ -36,7 +36,7 @@
 | REQ-EVID-001..005 | 5 | 已实现 | `internal/finding`、`internal/report`、`000006_phase5.sql` | 绑定幂等、版本冲突、证据排序、删除普通流量后读取、篡改拒绝与导出校验集成测试 |
 | REQ-PROD-009、REQ-UI-006 | 5..6 | 已实现 UI | `web/app/findings`、`internal/report`、`web/app/tasks` | 报告证据过期提示、实时任务动态和执行详情；见 phase6-plan |
 | REQ-UI-001..007、REQ-PROD-007 | 6 | 核心实现 | `web/app`、`internal/api/phase6.go`、`internal/tool/workspace.go` | 状态文本、操作确认、SSE 去重、ToolCall/图血缘、证据过期、持久队列状态；工作区与审计 RBAC 集成测试 |
-| REQ-PROD-010 | 5..7 | 部分实现 | `internal/agent/phase5_integration_test.go`、`docs/phase7-plan.md`、`.github/workflows/ci.yml` | 阶段集成测试、桌面/窄屏浏览器检查、Go vet 与 race 门禁已完成；六个 E2E 和完整发布门槛仍待 Phase 7 后续批次 |
+| REQ-PROD-010 | 5..7 | 部分实现 | `internal/agent/phase5_integration_test.go`、`internal/backup/verify.go`、`scripts/backup.sh`、`scripts/restore-drill.sh`、`docs/phase7-plan.md`、`.github/workflows/ci.yml` | 阶段集成测试、桌面/窄屏浏览器检查、Go vet 与 race、隔离恢复演练（Blob/凭据非空样本）已完成；六个完整 E2E 和最终发布门槛仍待完成 |
 
 每完成一个 Phase，本表必须扩展到该阶段触及的全部需求号，并附上测试证据。
 

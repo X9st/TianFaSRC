@@ -1,4 +1,4 @@
-.PHONY: dev-web dev-server web build test vet race fmt openapi openapi-check
+.PHONY: dev-web dev-server web build test vet race fmt openapi openapi-check backup restore-drill
 
 dev-web:
 	cd web && npm run dev
@@ -16,6 +16,7 @@ build: web
 
 test:
 	go run ./cmd/openapi -check
+	python3 -m unittest discover -s scripts -p 'test_*.py'
 	go test ./...
 	cd web && npm run typecheck
 
@@ -30,6 +31,12 @@ openapi:
 
 openapi-check:
 	go run ./cmd/openapi -check
+
+backup:
+	./scripts/backup.sh
+
+restore-drill:
+	./scripts/restore-drill.sh "$(BACKUP_DIR)"
 
 fmt:
 	gofmt -w $$(find cmd internal -name '*.go' -type f)
