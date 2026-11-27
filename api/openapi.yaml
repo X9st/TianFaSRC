@@ -1399,7 +1399,7 @@ components:
             name: tianfa_session
             type: apiKey
 info:
-    description: 授权安全验证平台 API。当前文档覆盖 Phase 0 至 Phase 6 已实现能力。
+    description: 授权漏洞挖掘平台 API。当前文档覆盖 Phase 0 至 Phase 6 已实现能力。
     title: TianFa API
     version: 0.1.0
 openapi: 3.1.0
@@ -2571,6 +2571,9 @@ paths:
                                                 type: integer
                                             cost_minor:
                                                 type: integer
+                                            finding_statuses:
+                                                properties: {}
+                                                type: object
                                             findings:
                                                 properties: {}
                                                 type: object
@@ -2586,6 +2589,11 @@ paths:
                                                     properties: {}
                                                     type: object
                                                 type: array
+                                            review_queue:
+                                                items:
+                                                    properties: {}
+                                                    type: object
+                                                type: array
                                         type: object
                                     meta:
                                         properties:
@@ -2596,7 +2604,7 @@ paths:
                     description: 成功
             security:
                 - SessionCookie: []
-            summary: 查看工作台指标
+            summary: 查看漏洞挖掘工作台指标
     /api/v1/evidence-bindings/{id}:
         delete:
             operationId: unbindEvidence

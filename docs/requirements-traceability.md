@@ -12,7 +12,7 @@
 | REQ-DEPLOY-005 | 0 | 已实现 | `internal/api/health.go` | Handler 单元测试 |
 | REQ-DEPLOY-006 | 0..3 | 已实现 | `cmd/server/main.go`、`internal/agent/scheduler.go` | 信号取消运行；过期租约由 Reconciliation 接管 |
 | REQ-UI-001 | 0 | 已实现 | `web/app` | 文本、图标和颜色共同表达状态 |
-| REQ-UI-002..007 | 6 | 计划 | — | 对应 E2E |
+| REQ-UI-002..007 | 6..7 | 核心实现，最终验收待完成 | `web/app` | 操作确认、事件去重、证据版本提示及持久队列状态已实现；完整可访问性和 E2E 在 Phase 7 |
 | REQ-DATA-001..003 | 1 | 已实现 | `internal/task/activity.go`、`domain_events`/`event_consumptions`/`activities` | `TestPhase1Flow` 事务与重复投影 |
 | REQ-ASSET-001..005 | 1 | 已实现 | `internal/task/assets.go`、`assets`、`task_asset_links` | `TestPhase1Flow` 规范化、去重、关联和资产图查询 |
 | REQ-GRAPH-001..005 | 1..6 | 部分实现 | `internal/task/store.go`、`internal/agent`、`internal/finding`、图迁移及锚点 API | 根节点、Goal、Intent、Fact、Finding 血缘与锚点已验收；完整 UI 图形展示在 Phase 6 |
@@ -36,7 +36,7 @@
 | REQ-EVID-001..005 | 5 | 已实现 | `internal/finding`、`internal/report`、`000006_phase5.sql` | 绑定幂等、版本冲突、证据排序、删除普通流量后读取、篡改拒绝与导出校验集成测试 |
 | REQ-PROD-009、REQ-UI-006 | 5..6 | 已实现 UI | `web/app/findings`、`internal/report`、`web/app/tasks` | 报告证据过期提示、实时任务动态和执行详情；见 phase6-plan |
 | REQ-UI-001..007、REQ-PROD-007 | 6 | 核心实现 | `web/app`、`internal/api/phase6.go`、`internal/tool/workspace.go` | 状态文本、操作确认、SSE 去重、ToolCall/图血缘、证据过期、持久队列状态；工作区与审计 RBAC 集成测试 |
-| REQ-PROD-010 | 5..7 | 部分实现 | `internal/agent/phase5_integration_test.go`、`docs/phase5-plan.md` | Phase 5 集成测试与桌面/窄屏浏览器验收已完成；完整端到端发布门槛在 Phase 7 |
+| REQ-PROD-010 | 5..7 | 部分实现 | `internal/agent/phase5_integration_test.go`、`docs/phase7-plan.md`、`.github/workflows/ci.yml` | 阶段集成测试、桌面/窄屏浏览器检查、Go vet 与 race 门禁已完成；六个 E2E 和完整发布门槛仍待 Phase 7 后续批次 |
 
 每完成一个 Phase，本表必须扩展到该阶段触及的全部需求号，并附上测试证据。
 

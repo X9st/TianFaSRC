@@ -1,10 +1,10 @@
 # 天罚 TianFa
 
-面向明确授权安全团队的自主安全验证平台。项目严格以
+面向明确授权安全团队的自主漏洞挖掘平台。产品从资产与授权范围出发，将多 Agent 探索、真实工具观察、漏洞线索、不可变证据和复测报告连接成可追溯的工作流。项目严格以
 [`全新自主安全验证平台-核心能力实现规格.md`](./全新自主安全验证平台-核心能力实现规格.md)
 为产品事实来源，按 Phase 逐步实现。
 
-当前交付：**Phase 6 — 完整用户工作台与 Worker 独立预算**。总览、任务、探索图、任务会话、工作区文件、策略与审计、流量与漏洞均有界面。任务页通过事件流及时刷新，并展示每个 Worker Run 的独立额度及消耗。额度由 Planner 按探索方向给出和调整，服务端限制模型回合、工具次数、Token 与运行时长，用户无需配置。验收证据和交付边界见 [Phase 6 验收记录](docs/phase6-plan.md)。
+当前交付：**Phase 6 核心工作台；Phase 7 加固进行中**。总览按漏洞线索、已确认漏洞和挖掘任务组织入口；任务、探索图、会话、工作区文件、策略与审计、流量与证据均有界面。任务页通过事件流及时刷新，并展示每个 Worker Run 的独立额度及消耗。额度由 Planner 按探索方向给出和调整，服务端限制模型回合、工具次数、Token 与运行时长，用户无需配置。产品定位见 [ADR-0005](docs/adr/0005-vulnerability-discovery-positioning.md)，验收边界见 [Phase 6 验收记录](docs/phase6-plan.md) 和 [Phase 7 计划](docs/phase7-plan.md)。
 
 ## 本地启动
 
@@ -62,6 +62,8 @@ API Key 使用数据目录 `secrets/master.key` 加密保存，该文件权限�
 ```bash
 make test
 make build
+make vet
+make race
 ```
 
 OpenAPI 由 Go 契约定义生成：`make openapi` 更新文档，

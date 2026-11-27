@@ -35,15 +35,15 @@ export default function LoginPage() {
           天罚
         </a>
         <div>
-          <span className="overline">AUTHORIZED SECURITY VALIDATION</span>
+          <span className="overline">AUTHORIZED VULNERABILITY DISCOVERY</span>
           <h1>
-            让每一次安全验证
+            让每一条漏洞线索
             <br />
-            都有清晰边界与证据。
+            都有边界与证据。
           </h1>
-          <p>从授权范围、目标与约束开始，持续追踪资产与探索血缘。</p>
+          <p>从授权资产出发，让多 Agent 探索、工具观察、漏洞复核与复测形成可追溯的挖掘链。</p>
         </div>
-        <small>天罚 · 授权安全验证平台</small>
+        <small>天罚 · 自主漏洞挖掘平台</small>
       </section>
       <section className="login-form-wrap">
         <form className="login-card" onSubmit={(event) => void submit(event)}>

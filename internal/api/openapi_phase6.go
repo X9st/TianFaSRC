@@ -36,7 +36,7 @@ func addPhase6OpenAPI(spec map[string]any) {
 	}
 	taskID := map[string]any{"name": "id", "in": "path", "required": true, "schema": id}
 	add("/api/v1/audit-log", "get", "listAuditLog", "分页查看本组织审计", obj(map[string]any{"items": arr(ref("AuditEntry")), "next_cursor": str}), nil, nil)
-	add("/api/v1/dashboard", "get", "getDashboard", "查看工作台指标", obj(map[string]any{"active_workers": num, "input_tokens": num, "output_tokens": num, "cost_minor": num, "findings": obj(nil), "models": obj(nil), "recent_activity": arr(obj(nil))}), nil, nil)
+	add("/api/v1/dashboard", "get", "getDashboard", "查看漏洞挖掘工作台指标", obj(map[string]any{"active_workers": num, "input_tokens": num, "output_tokens": num, "cost_minor": num, "findings": obj(nil), "finding_statuses": obj(nil), "review_queue": arr(obj(nil)), "models": obj(nil), "recent_activity": arr(obj(nil))}), nil, nil)
 	add("/api/v1/policy", "get", "getPolicyOverview", "查看运行硬边界", obj(map[string]any{"global_worker_limit": num, "blocked_tool_calls": num, "worker_hard_limits": obj(nil)}), nil, nil)
 	add("/api/v1/tasks/{id}/policy-blocks", "get", "listPolicyBlocks", "查看任务策略阻断", arr(ref("PolicyBlock")), []any{taskID}, nil)
 	add("/api/v1/tasks/{id}/workspace", "get", "listTaskWorkspaceFiles", "列出任务文件", arr(ref("WorkspaceFile")), []any{taskID}, nil)

@@ -1,4 +1,4 @@
-.PHONY: dev-web dev-server web build test fmt openapi openapi-check
+.PHONY: dev-web dev-server web build test vet race fmt openapi openapi-check
 
 dev-web:
 	cd web && npm run dev
@@ -18,6 +18,12 @@ test:
 	go run ./cmd/openapi -check
 	go test ./...
 	cd web && npm run typecheck
+
+vet:
+	go vet ./...
+
+race:
+	go test -race ./...
 
 openapi:
 	go run ./cmd/openapi

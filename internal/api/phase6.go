@@ -50,6 +50,7 @@ func (api phase6API) dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	findings := map[string]int{}
+	findingStatuses := map[string]int{}
 	rows, err := api.tasks.Pool.Query(r.Context(), `SELECT severity,count(*) FROM findings WHERE organization_id=$1 GROUP BY severity`, user.OrganizationID)
 	if err != nil {
 		apiError(w, r, err)
@@ -64,6 +65,55 @@ func (api phase6API) dashboard(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		findings[key] = count
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		apiError(w, r, err)
+		return
+	}
+	rows, err = api.tasks.Pool.Query(r.Context(), `SELECT status,count(*) FROM findings WHERE organization_id=$1 GROUP BY status`, user.OrganizationID)
+	if err != nil {
+		apiError(w, r, err)
+		return
+	}
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			rows.Close()
+			apiError(w, r, err)
+			return
+		}
+		findingStatuses[status] = count
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		apiError(w, r, err)
+		return
+	}
+	type reviewFinding struct {
+		ID        string `json:"id"`
+		TaskID    string `json:"task_id"`
+		TaskTitle string `json:"task_title"`
+		Title     string `json:"title"`
+		Severity  string `json:"severity"`
+	}
+	reviewQueue := []reviewFinding{}
+	rows, err = api.tasks.Pool.Query(r.Context(), "SELECT f.id,f.task_id,t.title,f.title,f.severity FROM findings f JOIN tasks t ON t.id=f.task_id AND t.organization_id=f.organization_id WHERE f.organization_id=$1 AND f.status='draft' ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,f.created_at DESC,f.id DESC LIMIT 5", user.OrganizationID)
+	if err != nil {
+		apiError(w, r, err)
+		return
+	}
+	for rows.Next() {
+		var item reviewFinding
+		if err := rows.Scan(&item.ID, &item.TaskID, &item.TaskTitle, &item.Title, &item.Severity); err != nil {
+			rows.Close()
+			apiError(w, r, err)
+			return
+		}
+		reviewQueue = append(reviewQueue, item)
 	}
 	err = rows.Err()
 	rows.Close()
@@ -120,7 +170,7 @@ func (api phase6API) dashboard(w http.ResponseWriter, r *http.Request) {
 		apiError(w, r, err)
 		return
 	}
-	writeData(w, r, 200, map[string]any{"active_workers": activeWorkers, "input_tokens": inputTokens, "output_tokens": outputTokens, "cost_minor": costMinor, "findings": findings, "models": models, "recent_activity": recent})
+	writeData(w, r, 200, map[string]any{"active_workers": activeWorkers, "input_tokens": inputTokens, "output_tokens": outputTokens, "cost_minor": costMinor, "findings": findings, "finding_statuses": findingStatuses, "review_queue": reviewQueue, "models": models, "recent_activity": recent})
 }
 
 func (api phase6API) auditLog(w http.ResponseWriter, r *http.Request) {

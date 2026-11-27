@@ -51,6 +51,12 @@ jobs:
         env:
           TIANFA_TEST_DATABASE_URL: postgres://tianfa:tianfa@localhost:5432/tianfa_ci?sslmode=disable
         run: go test ./...
+      - name: Check Go code
+        run: go vet ./...
+      - name: Detect data races
+        env:
+          TIANFA_TEST_DATABASE_URL: postgres://tianfa:tianfa@localhost:5432/tianfa_ci?sslmode=disable
+        run: go test -race ./...
       - name: Check OpenAPI generation
         run: go run ./cmd/openapi -check
       - name: Build server

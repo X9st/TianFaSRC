@@ -75,8 +75,8 @@ export default function AssetsPage() {
     <WorkspaceShell section="assets">
       <header className="workspace-header">
         <div>
-          <span className="workspace-eyebrow">工作台 / 全局资产</span>
-          <h1>全局资产</h1>
+          <span className="workspace-eyebrow">漏洞挖掘 / 资产</span>
+          <h1>资产库</h1>
           <p>同一组织共享资产真值；重复资产会按服务端规范化键合并。</p>
         </div>
       </header>

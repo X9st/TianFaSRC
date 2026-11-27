@@ -130,8 +130,13 @@ func TestPhase6ConversationWorkspaceAndAudit(t *testing.T) {
 	if _, err = pool.Exec(ctx, `UPDATE tasks SET status='running' WHERE id=$1`, item.Task.ID); err != nil {
 		t.Fatal(err)
 	}
-	if out:=send("goal","运行中追加的目标","","","");out.Code!=201{t.Fatalf("running goal: %d %s",out.Code,out.Body.String())}
-	var wake bool;if err=pool.QueryRow(ctx,`SELECT pending FROM planner_wakes WHERE task_id=$1`,item.Task.ID).Scan(&wake);err!=nil||!wake{t.Fatalf("planner wake: %v %v",wake,err)}
+	if out := send("goal", "运行中追加的目标", "", "", ""); out.Code != 201 {
+		t.Fatalf("running goal: %d %s", out.Code, out.Body.String())
+	}
+	var wake bool
+	if err = pool.QueryRow(ctx, `SELECT pending FROM planner_wakes WHERE task_id=$1`, item.Task.ID).Scan(&wake); err != nil || !wake {
+		t.Fatalf("planner wake: %v %v", wake, err)
+	}
 	if out := send("intent", "检查首页访问控制", item.Goals[0].ID, "", "受控响应确认访问控制结果"); out.Code != 201 {
 		t.Fatalf("intent: %d %s", out.Code, out.Body.String())
 	}
@@ -173,7 +178,12 @@ func TestPhase6ConversationWorkspaceAndAudit(t *testing.T) {
 	if out := call("GET", path+"/conversation", nil, viewerCookies, ""); out.Code != 200 || !strings.Contains(out.Body.String(), "先验证首页") {
 		t.Fatalf("viewer conversation: %d %s", out.Code, out.Body.String())
 	}
-	if out := call("GET", "/api/v1/dashboard", nil, viewerCookies, ""); out.Code != 200 || !strings.Contains(out.Body.String(), "active_workers") {
+	for _, finding := range []struct{ title, severity, status string }{{"待复核高危线索", "high", "draft"}, {"已确认低危漏洞", "low", "confirmed"}} {
+		if _, err := pool.Exec(ctx, `INSERT INTO findings(id,organization_id,task_id,node_id,fingerprint,title,vulnerability_type,location,severity,status) VALUES($1,$2,$3,$4,$5,$6,'access_control','/',$7,$8)`, identity.NewID(), user.OrganizationID, item.Task.ID, item.Goals[0].ID, identity.NewID(), finding.title, finding.severity, finding.status); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out := call("GET", "/api/v1/dashboard", nil, viewerCookies, ""); out.Code != 200 || !strings.Contains(out.Body.String(), `"draft":1`) || !strings.Contains(out.Body.String(), `"confirmed":1`) || !strings.Contains(out.Body.String(), "待复核高危线索") || strings.Contains(out.Body.String(), "已确认低危漏洞") {
 		t.Fatalf("dashboard: %d %s", out.Code, out.Body.String())
 	}
 }

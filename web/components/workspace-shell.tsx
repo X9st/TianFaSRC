@@ -43,21 +43,22 @@ export default function WorkspaceShell({
   }
   return (
     <div className="workspace-layout">
+      <a href="#main-content" className="skip-link">跳转到主要内容</a>
       <aside className="workspace-sidebar">
-        <a href="/" className="workspace-brand">
+        <a href="/" className="workspace-brand" aria-label="天罚漏洞挖掘工作台首页">
           <span className="workspace-brand-mark">
             <ShieldCheck size={22} />
           </span>
           <span>
             <strong>天罚</strong>
-            <small>TIANFA SECURITY</small>
+            <small>VULNERABILITY DISCOVERY</small>
           </span>
         </a>
-        <div className="workspace-nav-label">工作台</div>
+        <div className="workspace-nav-label">漏洞挖掘</div>
         <nav aria-label="主导航">
           <a href="/" className={section === "dashboard" ? "selected" : ""} aria-current={section === "dashboard" ? "page" : undefined}>
             <LayoutDashboard size={18} />
-            总览
+            挖掘总览
           </a>
           <a
             href="/tasks/"
@@ -65,7 +66,7 @@ export default function WorkspaceShell({
             aria-current={section === "tasks" ? "page" : undefined}
           >
             <Activity size={18} />
-            任务
+            挖掘任务
           </a>
           <a
             href="/assets/"
@@ -73,7 +74,7 @@ export default function WorkspaceShell({
             aria-current={section === "assets" ? "page" : undefined}
           >
             <Boxes size={18} />
-            全局资产
+            资产库
           </a>
           <a href="/models/" className={section === "models" ? "selected" : ""} aria-current={section === "models" ? "page" : undefined}>
             <Sparkles size={18} />
@@ -85,9 +86,9 @@ export default function WorkspaceShell({
           </a>
           <a href="/findings/" className={section === "findings" ? "selected" : ""} aria-current={section === "findings" ? "page" : undefined}>
             <FileSearch size={18} />
-            流量与漏洞
+            漏洞与证据
           </a>
-          <a href="/conversation/" className={section === "conversation" ? "selected" : ""} aria-current={section === "conversation" ? "page" : undefined}><MessageSquare size={18}/>任务会话</a>
+          <a href="/conversation/" className={section === "conversation" ? "selected" : ""} aria-current={section === "conversation" ? "page" : undefined}><MessageSquare size={18}/>挖掘会话</a>
           {(user?.role === "admin" || user?.role === "operator") && <a href="/workspace/" className={section === "workspace" ? "selected" : ""} aria-current={section === "workspace" ? "page" : undefined}><FolderOpen size={18}/>任务文件</a>}
           {user?.role === "admin" && <a href="/system/" className={section === "system" ? "selected" : ""} aria-current={section === "system" ? "page" : undefined}><ShieldAlert size={18}/>策略与审计</a>}
           {user?.role === "admin" && (
@@ -115,7 +116,7 @@ export default function WorkspaceShell({
           )}
         </div>
       </aside>
-      <main className="workspace-main">
+      <main className="workspace-main" id="main-content" tabIndex={-1}>
         <div className="workspace-content">
           {user ? (
             children

@@ -480,14 +480,14 @@ function TaskWorkspace() {
         <div>
           <span className="workspace-eyebrow">工作台 / 任务</span>
           <h1>
-            {creating ? "创建验证任务" : selected ? "任务详情" : "验证任务"}
+            {creating ? "创建挖掘任务" : selected ? "挖掘任务详情" : "挖掘任务"}
           </h1>
           <p>
             {creating
-              ? "先写清授权目标与范围；创建后可以检查双图血缘。"
+              ? "先写清挖掘目标与授权范围；系统只在边界内探索，结果进入证据链。"
               : selected
-                ? "查看目标、范围、资产锚点和探索血缘。"
-                : "管理授权验证任务，从草稿开始。"}
+                ? "跟踪探索方向、真实工具观察、漏洞线索与证据血缘。"
+                : "管理授权范围内的漏洞挖掘任务，从草稿开始。"}
           </p>
         </div>
         <div className="workspace-header-actions">
@@ -537,7 +537,7 @@ function TaskWorkspace() {
                   maxLength={200}
                   value={title}
                   onChange={(event) => setTitle(event.target.value)}
-                  placeholder="例如：测试环境访问控制验证"
+                  placeholder="例如：测试环境访问控制漏洞挖掘"
                 />
               </label>
               <label className="full">
@@ -546,11 +546,11 @@ function TaskWorkspace() {
                   value={description}
                   onChange={(event) => setDescription(event.target.value)}
                   rows={3}
-                  placeholder="说明授权背景、验证目的和需要关注的系统"
+                  placeholder="说明授权背景、待挖掘资产和重点漏洞类型"
                 />
               </label>
             </div>
-            <div className="field-label">验证目标</div>
+            <div className="field-label">挖掘目标</div>
             {goals.map((goal, index) => (
               <div className="inline-fields" key={index}>
                 <input
@@ -564,7 +564,7 @@ function TaskWorkspace() {
                     )
                   }
                   placeholder={`目标 ${index + 1}：例如确认是否存在未授权访问`}
-                  aria-label={`验证目标 ${index + 1}`}
+                  aria-label={`挖掘目标 ${index + 1}`}
                 />
                 {goals.length > 1 && (
                   <button
@@ -759,7 +759,7 @@ function TaskWorkspace() {
               <section className="workspace-card">
                 <div className="section-row">
                   <div>
-                    <h2>验证目标</h2>
+                    <h2>挖掘目标</h2>
                     <p>每个目标连接到任务根节点。</p>
                   </div>
                 </div>
@@ -952,7 +952,7 @@ function TaskWorkspace() {
                 <ExplorationGraph graph={graph} onRun={async id=>{await showRun(id);window.setTimeout(()=>document.getElementById("agent-run-transcript")?.scrollIntoView({behavior:"smooth"}),50);}} />
               </section>
               <a href="/assets/" className="workspace-link">
-                查看全局资产 <ArrowRight size={15} />
+                查看资产库 <ArrowRight size={15} />
               </a>
             </aside>
           </div>
@@ -980,8 +980,8 @@ function TaskWorkspace() {
           ) : tasks.length === 0 ? (
             <div className="workspace-empty">
               <Network size={30} />
-              <h3>还没有验证任务</h3>
-              <p>先创建一个授权范围明确的草稿任务。</p>
+              <h3>还没有挖掘任务</h3>
+              <p>先创建一个授权范围明确的漏洞挖掘任务。</p>
               <button
                 type="button"
                 className="workspace-primary"
