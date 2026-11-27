@@ -86,10 +86,12 @@ func (api phase3API) streamTaskEvents(w http.ResponseWriter, r *http.Request) {
 	timeout := time.NewTimer(30 * time.Second)
 	defer timeout.Stop()
 	for {
-		rows, err := api.tasks.Pool.Query(r.Context(), `SELECT id,event_type,occurred_at FROM domain_events WHERE task_id=$1 AND organization_id=$2 AND (occurred_at,id)>($3,$4::uuid) ORDER BY occurred_at,id LIMIT 100`, r.PathValue("id"), user.OrganizationID, after, coalesceUUID(afterID))
+		const batchSize = 500
+		rows, err := api.tasks.Pool.Query(r.Context(), `SELECT id,event_type,occurred_at FROM domain_events WHERE task_id=$1 AND organization_id=$2 AND (occurred_at,id)>($3,$4::uuid) ORDER BY occurred_at,id LIMIT $5`, r.PathValue("id"), user.OrganizationID, after, coalesceUUID(afterID), batchSize)
 		if err != nil {
 			return
 		}
+		batchCount := 0
 		for rows.Next() {
 			var id, kind string
 			var at time.Time
@@ -100,6 +102,7 @@ func (api phase3API) streamTaskEvents(w http.ResponseWriter, r *http.Request) {
 			payload, _ := json.Marshal(map[string]string{"id": id, "kind": kind})
 			fmt.Fprintf(w, "id: %s\nevent: change\ndata: %s\n\n", id, payload)
 			after, afterID = at, id
+			batchCount++
 		}
 		err = rows.Err()
 		rows.Close()
@@ -107,6 +110,10 @@ func (api phase3API) streamTaskEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		flusher.Flush()
+		if batchCount == batchSize {
+			// Drain a reconnect backlog without a poll delay between pages.
+			continue
+		}
 		select {
 		case <-r.Context().Done():
 			return

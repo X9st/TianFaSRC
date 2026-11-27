@@ -16,7 +16,9 @@
 - 在受控授权靶场执行规格 E2E-01 至 E2E-06，覆盖完整自主挖掘、主备模型、范围阻断、证据存续、崩溃恢复与 Skill/MCP。
 - 补齐第 17.3 节尚未覆盖的事务失败、数据库中断和控制命令竞态。
 
-已有自动化证据：`TestConcurrentClaimsRecoveryAndFencing`（20 Worker 单 Lease）、`TestPlanIntentFactAndQuotaFailover`（真实 HTTP Stub 的主备切换）、`TestPartialStreamContinuesOnBackup`、`TestToolCallIdempotencyScopeAndAudit`、`TestMCPDeferredUntilSkillLoad`、`TestEvidenceSurvivesTrafficDeletionAndRejectsTampering`、`TestKilledWorkerProcessRecovers`，以及新增的 `TestFailedTrafficTransactionLeavesCollectableOrphans`、`TestPauseCancelAndReconcileRaceHasOneTerminalReason`。并发测试发现 Reconciliation 曾读取过时的任务状态，导致取消后 Intent 重开；现对任务与 Lease 同时加行锁，重复 20 轮竞态测试通过。这些是场景的组成部分，尚不足以替代六个从 UI 到数据和报告的完整 E2E。
+已有自动化证据：`TestConcurrentClaimsRecoveryAndFencing`（20 Worker 单 Lease）、`TestPlanIntentFactAndQuotaFailover`（真实 HTTP Stub 的主备切换）、`TestPartialStreamContinuesOnBackup`、`TestToolCallIdempotencyScopeAndAudit`、`TestMCPDeferredUntilSkillLoad`、`TestEvidenceSurvivesTrafficDeletionAndRejectsTampering`、`TestKilledWorkerProcessRecovers`，以及新增的 `TestFailedTrafficTransactionLeavesCollectableOrphans`、`TestPauseCancelAndReconcileRaceHasOneTerminalReason`、`TestTransientDatabaseOutageDoesNotCompleteTask`。并发测试发现 Reconciliation 曾读取过时的任务状态，导致取消后 Intent 重开；现对任务与 Lease 同时加行锁，重复 20 轮竞态测试通过。数据库断连测试验证运行不会误报完成，恢复后过期 Lease 可重新领取。这些是场景的组成部分，尚不足以替代六个从 UI 到数据和报告的完整 E2E。
+
+新增 `TestPhase7AutonomousHTTPFindingAndFailoverE2E`：从管理员 API 登录、创建两目标/授权范围、启动任务，到 Planner 并行派工、两个 Worker 访问本地靶场并创建可追溯 Fact/Finding、证明目标、任务完成，检查 API 状态、图、Finding 和 Activity。主 HTTP Stub 返回 402，备用 Profile 接管，独立尝试/用量及 UI 所用 Activity 接口均通过断言；连续 3 次重跑通过。它覆盖 E2E-01/02 的后端主链路，尚未覆盖纯浏览器创建任务、真实 Traffic/Evidence 绑定及完整 UI 操作。
 
 ## 7C：发布加固
 
@@ -27,6 +29,8 @@
 已落地：Compose 冷备份脚本、受限归档解包、隔离恢复演练、Blob 文件哈希/大小/引用计数及凭据解密校验；恢复后服务 ready。2026-11-27 在隔离项目中用 1 条流量 Blob 引用、1 条加密凭据和工作区文件实际演练通过，结果 `blobs_verified=1`、`traffic_refs=1`、`secrets=1`。归档安全测试进入 CI，运维步骤见 [operations.md](operations.md)。Go 工具链升级到 1.27.4，更新了 pgx、x/net、x/text；`govulncheck` 可达漏洞从 17 项降到 0，生产前端 `npm audit` 为 0 项。镜像本地 Buildx 构建成功，生成含 38 个包的 SPDX SBOM 和 SLSA 来源证明。发布工作流已配置摘要签名，但尚未执行发布。`make test`、`make race` 已通过。
 
 浏览器复查：隔离部署以管理员登录，桌面及 390px 窄屏查看挖掘总览，窄屏 `scrollWidth=390`、无整页横向溢出，控制台 0 错误/警告。截图：[桌面](qa/phase7-release-dashboard-desktop.png)、[窄屏](qa/phase7-release-dashboard-mobile.png)。
+
+性能预检：隔离数据库的 `TestPhase7CorePerformance` 经真实 HTTP Handler 测量 10 万资产过滤列表、单任务 1 万探索节点的图与覆盖、50 个活跃 Worker 的暂停加恢复控制 API，以及 1 万事件 SSE 断线续传。当前开发机容器（10 vCPU、约 8 GB 内存）最近一次 P95 分别为 2.30 ms、23.25 ms、7.41 ms（控制 API 统计一次暂停加一次恢复，因此比单次请求更保守）；SSE 首批 500 条 6.78 ms，两次连接逐条核对 1 万个不重复事件。原 SSE 每 100 条等待 2 秒，现有积压时立即连续分页，空闲时才轮询。正式门槛仍需在规格指定的 8 vCPU/16 GB 同机 PostgreSQL 环境执行 `TIANFA_PERF_DATABASE_URL=... make perf-core`；1 GB 普通流量清理与 Evidence 读取的并行性能场景尚未建立基线。
 
 待通过：六个完整 E2E、第 17.3 节剩余故障注入、参考环境性能基线、完整可访问性与安全审计、镜像发布工作流实跑。自动 Retester、非 HTTP 证据等已有功能缺口也需按原需求补齐。
 

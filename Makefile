@@ -1,4 +1,4 @@
-.PHONY: dev-web dev-server web build test vet race fmt openapi openapi-check backup restore-drill
+.PHONY: dev-web dev-server web build test vet race fmt openapi openapi-check backup restore-drill perf-core
 
 dev-web:
 	cd web && npm run dev
@@ -37,6 +37,10 @@ backup:
 
 restore-drill:
 	./scripts/restore-drill.sh "$(BACKUP_DIR)"
+
+perf-core:
+	@test -n "$$TIANFA_PERF_DATABASE_URL" || { echo 'set TIANFA_PERF_DATABASE_URL to a reference PostgreSQL instance' >&2; exit 1; }
+	TIANFA_PERF_ENFORCE=1 go test ./internal/task -run TestPhase7CorePerformance -count=1 -v
 
 fmt:
 	gofmt -w $$(find cmd internal -name '*.go' -type f)

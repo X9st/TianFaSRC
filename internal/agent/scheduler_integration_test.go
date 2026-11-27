@@ -214,6 +214,59 @@ func TestPauseCancelAndReconcileRaceHasOneTerminalReason(t *testing.T) {
 	}
 }
 
+func TestTransientDatabaseOutageDoesNotCompleteTask(t *testing.T) {
+	s, _, taskID, intentID := schedulerFixture(t)
+	ctx := context.Background()
+	originalPool := s.Engine.Pool
+	claim, ok, err := s.ClaimWorker(ctx)
+	if err != nil || !ok {
+		t.Fatalf("claim before outage: %v %v", ok, err)
+	}
+	var unavailable atomic.Bool
+	config := originalPool.Config()
+	config.BeforeConnect = func(context.Context, *pgx.ConnConfig) error {
+		if unavailable.Load() {
+			return errors.New("injected PostgreSQL outage")
+		}
+		return nil
+	}
+	outagePool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(outagePool.Close)
+	if err := outagePool.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s.Engine.Pool = outagePool
+	unavailable.Store(true)
+	outagePool.Reset()
+	if err := s.FinishWorker(ctx, claim, "done", "", &Observation{Summary: "测试观察", ToolCallID: identity.NewID(), Confirmed: true}); err == nil {
+		t.Fatal("worker finish succeeded during database outage")
+	}
+	if _, err := s.Reconcile(ctx); err == nil {
+		t.Fatal("reconciliation reported success during database outage")
+	}
+	var taskStatus string
+	if err := originalPool.QueryRow(ctx, `SELECT status FROM tasks WHERE id=$1`, taskID).Scan(&taskStatus); err != nil || taskStatus != "running" {
+		t.Fatalf("task status during outage=%s err=%v", taskStatus, err)
+	}
+	unavailable.Store(false)
+	if _, err := outagePool.Exec(ctx, `UPDATE worker_leases SET expires_at=now()-interval '1 second' WHERE intent_id=$1`, intentID); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := s.Reconcile(ctx); err != nil || count != 1 {
+		t.Fatalf("recovery reconciliation=%d %v", count, err)
+	}
+	reclaimed, ok, err := s.ClaimWorker(ctx)
+	if err != nil || !ok || reclaimed.Attempt != 2 {
+		t.Fatalf("reclaimed after outage=%+v %v %v", reclaimed, ok, err)
+	}
+	if err := originalPool.QueryRow(ctx, `SELECT status FROM tasks WHERE id=$1`, taskID).Scan(&taskStatus); err != nil || taskStatus != "running" {
+		t.Fatalf("task status after recovery=%s err=%v", taskStatus, err)
+	}
+}
+
 func TestPauseResumeAndMaxAttempts(t *testing.T) {
 	s, orgID, taskID, intentID := schedulerFixture(t)
 	ctx := context.Background()
