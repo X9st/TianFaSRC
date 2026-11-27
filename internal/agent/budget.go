@@ -67,31 +67,18 @@ func GetWorkerBudget(ctx context.Context, pool *pgxpool.Pool, orgID, runID strin
 }
 
 func ListWorkerBudgets(ctx context.Context, pool *pgxpool.Pool, orgID, taskID string) ([]WorkerBudget, error) {
-	rows, err := pool.Query(ctx, `SELECT b.run_id FROM worker_run_budgets b JOIN tasks t ON t.id=b.task_id WHERE t.id=$1 AND t.organization_id=$2 ORDER BY b.started_at DESC,b.run_id DESC LIMIT 200`, taskID, orgID)
+	rows, err := pool.Query(ctx, `SELECT b.run_id,b.intent_id,b.task_id,b.max_model_rounds,b.max_tool_calls,b.max_tokens,b.max_seconds,b.model_rounds_used,b.tool_calls_used,b.input_tokens_used,b.output_tokens_used,b.reason,b.started_at FROM worker_run_budgets b JOIN tasks t ON t.id=b.task_id WHERE t.id=$1 AND t.organization_id=$2 ORDER BY b.started_at DESC,b.run_id DESC LIMIT 200`, taskID, orgID)
 	if err != nil {
 		return nil, err
 	}
-	ids := []string{}
+	defer rows.Close()
+	items := []WorkerBudget{}
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, err
-	}
-	rows.Close()
-	items := make([]WorkerBudget, 0, len(ids))
-	for _, id := range ids {
-		item, err := GetWorkerBudget(ctx, pool, orgID, id)
-		if err != nil {
+		var item WorkerBudget
+		if err := rows.Scan(&item.RunID, &item.IntentID, &item.TaskID, &item.MaxModelRounds, &item.MaxToolCalls, &item.MaxTokens, &item.MaxSeconds, &item.ModelRoundsUsed, &item.ToolCallsUsed, &item.InputTokensUsed, &item.OutputTokensUsed, &item.Reason, &item.StartedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
 	}
-	return items, nil
+	return items, rows.Err()
 }

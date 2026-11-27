@@ -238,6 +238,13 @@ func (s Scheduler) ClaimWorker(ctx context.Context) (Claim, bool, error) {
 	if err != nil {
 		return Claim{}, false, err
 	}
+	if c.Attempt >= 2 {
+		fallback := defaultBudget(5, c.Attempt)
+		_, err = tx.Exec(ctx, `UPDATE worker_run_budgets SET max_model_rounds=$2,max_tool_calls=$3,max_tokens=$4,max_seconds=$5,reason=$6 WHERE run_id=$1 AND reason IN ('系统保守默认值','高优先级方向的系统默认值')`, c.RunID, fallback.ModelRounds, fallback.ToolCalls, fallback.Tokens, fallback.Seconds, fallback.Reason)
+		if err != nil {
+			return Claim{}, false, err
+		}
+	}
 	_, err = tx.Exec(ctx, `UPDATE task_intents SET status='leased',attempt=$2,last_dispatched_at=now(),updated_at=now(),blocking_reason=NULL WHERE id=$1`, c.IntentID, c.Attempt)
 	if err != nil {
 		return Claim{}, false, err
@@ -699,11 +706,18 @@ func (s Scheduler) RunPlanner(ctx context.Context, c Claim) error {
 	if err != nil {
 		return err
 	}
+	workerBudgets, err := ListWorkerBudgets(plannerCtx, s.Engine.Pool, c.OrganizationID, c.TaskID)
+	if err != nil {
+		return err
+	}
+	if len(workerBudgets) > 30 {
+		workerBudgets = workerBudgets[:30]
+	}
 	var activeWorkers int
 	if err = s.Engine.Pool.QueryRow(plannerCtx, `SELECT count(*) FROM worker_leases WHERE task_id=$1 AND expires_at>now()`, c.TaskID).Scan(&activeWorkers); err != nil {
 		return err
 	}
-	input, _ := json.Marshal(map[string]any{"task": detail.Task, "goals": detail.Goals, "scope": detail.Scope, "constraints": detail.Constraints, "graph": graph, "intents": intents, "todos": todos, "decomposer_output": directions, "trigger_events": triggerEvents, "available_worker_slots": detail.Task.WorkerLimit - activeWorkers})
+	input, _ := json.Marshal(map[string]any{"task": detail.Task, "goals": detail.Goals, "scope": detail.Scope, "constraints": detail.Constraints, "graph": graph, "intents": intents, "todos": todos, "decomposer_output": directions, "trigger_events": triggerEvents, "worker_budgets": workerBudgets, "available_worker_slots": detail.Task.WorkerLimit - activeWorkers})
 	plan, err := s.Engine.runRole(plannerCtx, c.OrganizationID, c.ActorID, c.TaskID, "", "planner", string(input), "")
 	if err != nil {
 		return err
