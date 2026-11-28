@@ -1,17 +1,22 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -29,6 +34,7 @@ import (
 	"github.com/X9st/TianFaSRC/internal/task"
 	"github.com/X9st/TianFaSRC/internal/tool"
 	"github.com/X9st/TianFaSRC/internal/traffic"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestWorkerFindingReportRequiresRealObservation(t *testing.T) {
@@ -359,5 +365,121 @@ func TestFailedTrafficTransactionLeavesCollectableOrphans(t *testing.T) {
 	}
 	if count, err := store.Collect(ctx, time.Now().Add(time.Hour)); err != nil || count != 2 {
 		t.Fatalf("orphan collection: %d %v", count, err)
+	}
+}
+
+func TestTrafficBlobCrashHelper(t *testing.T) {
+	dsn := os.Getenv("TIANFA_BLOB_CRASH_DB")
+	taskID := os.Getenv("TIANFA_BLOB_CRASH_TASK")
+	orgID := os.Getenv("TIANFA_BLOB_CRASH_ORG")
+	dataDir := os.Getenv("TIANFA_BLOB_CRASH_DIR")
+	if dsn == "" || taskID == "" || orgID == "" || dataDir == "" {
+		return
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	fmt.Println("STARTED")
+	_, err = (traffic.Store{Pool: pool, Blobs: blob.Store{Root: dataDir}}).Record(ctx, traffic.RecordInput{
+		OrganizationID: orgID, TaskID: taskID, Method: "GET", URL: "https://example.invalid/crash", RemoteIP: "203.0.113.10", StatusCode: 200,
+		RequestRaw: []byte("GET /crash HTTP/1.1\r\nHost: example.invalid\r\n\r\n"), ResponseRaw: []byte("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nproof"),
+		RequestedAt: time.Now().Add(-time.Second), RespondedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Fatal("traffic record unexpectedly committed before process kill")
+}
+
+func TestTrafficBlobProcessKillLeavesCollectableOrphans(t *testing.T) {
+	s, orgID, taskID, _ := schedulerFixture(t)
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store := traffic.Store{Pool: s.Engine.Pool, Blobs: blob.Store{Root: dataDir}}
+	request := []byte("GET /crash HTTP/1.1\r\nHost: example.invalid\r\n\r\n")
+	response := []byte("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nproof")
+	paths := make([]string, 0, 2)
+	for _, raw := range [][]byte{request, response} {
+		sum := sha256.Sum256(raw)
+		hash := hex.EncodeToString(sum[:])
+		paths = append(paths, filepath.Join(dataDir, "blobs", hash[:2], hash))
+	}
+	lock, err := s.Engine.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback(ctx)
+	if _, err := lock.Exec(ctx, `LOCK TABLE blobs IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	dsn, err := url.Parse(os.Getenv("TIANFA_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsn.Path = "/" + s.Engine.Pool.Config().ConnConfig.Database
+	cmd := exec.Command(os.Args[0], "-test.run=^TestTrafficBlobCrashHelper$")
+	cmd.Env = append(os.Environ(), "TIANFA_BLOB_CRASH_DB="+dsn.String(), "TIANFA_BLOB_CRASH_TASK="+taskID, "TIANFA_BLOB_CRASH_ORG="+orgID, "TIANFA_BLOB_CRASH_DIR="+dataDir)
+	cmd.Stderr = os.Stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() || scanner.Text() != "STARTED" {
+		_ = cmd.Process.Kill()
+		t.Fatalf("helper did not start: %q (%v)", scanner.Text(), scanner.Err())
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		ready := true
+		for _, path := range paths {
+			if _, err := os.Stat(path); err != nil {
+				ready = false
+			}
+		}
+		if ready {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, path := range paths {
+		if _, err := os.Stat(path); err != nil {
+			_ = cmd.Process.Kill()
+			t.Fatalf("blob was not written before kill: %s %v", path, err)
+		}
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+	if err := lock.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var blobRows, trafficRows int
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM blobs`).Scan(&blobRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM traffic WHERE task_id=$1`, taskID).Scan(&trafficRows); err != nil {
+		t.Fatal(err)
+	}
+	if blobRows != 0 || trafficRows != 0 {
+		t.Fatalf("uncommitted references remain: blobs=%d traffic=%d", blobRows, trafficRows)
+	}
+	if count, err := store.Collect(ctx, time.Now().Add(-time.Hour)); err != nil || count != 0 {
+		t.Fatalf("orphan collected before grace period: %d %v", count, err)
+	}
+	if count, err := store.Collect(ctx, time.Now().Add(time.Hour)); err != nil || count != 2 {
+		t.Fatalf("orphan collection: %d %v", count, err)
+	}
+	for _, path := range paths {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("orphan file remains: %s %v", path, err)
+		}
 	}
 }

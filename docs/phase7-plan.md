@@ -16,6 +16,8 @@
 - 在受控授权靶场执行规格 E2E-01 至 E2E-06，覆盖完整自主挖掘、主备模型、范围阻断、证据存续、崩溃恢复与 Skill/MCP。
 - 补齐第 17.3 节尚未覆盖的事务失败、数据库中断和控制命令竞态。
 
+E2E-05 的四个精确崩溃时点已有 PostgreSQL 集成故障注入：Planner 领取后杀进程，租约过期时递增 fence 并写入 `planner.reconciled` Activity；真实 HTTP 工具产生外部请求与流量记录后，在结果事务写回前杀进程，同一幂等键不会再次执行，请求保留且超时工具转为 `process_interrupted` 并写入 `tool.reconciled` Activity；Finding 事务提交但 Outbox 尚未消费时杀进程，重启后事件、Planner 唤醒和 Activity 各只投影一次；Blob 文件写入但数据库引用尚未提交时杀进程，宽限期后孤儿文件可回收。另验证 Finding 写入中断时图节点、Finding、审计和 Outbox 一同回滚。这些是独立后端进程与真实数据库测试；完整浏览器 E2E-05 仍需串联运行、重启与 UI 核验。
+
 已有自动化证据：`TestConcurrentClaimsRecoveryAndFencing`（20 Worker 单 Lease）、`TestPlanIntentFactAndQuotaFailover`（真实 HTTP Stub 的主备切换）、`TestPartialStreamContinuesOnBackup`、`TestToolCallIdempotencyScopeAndAudit`、`TestMCPDeferredUntilSkillLoad`（延迟解锁、连接故障后再次调用、大输出预览截断与完整读取）、`TestEvidenceSurvivesTrafficDeletionAndRejectsTampering`、`TestKilledWorkerProcessRecovers`，以及新增的 `TestFailedTrafficTransactionLeavesCollectableOrphans`、`TestPauseCancelAndReconcileRaceHasOneTerminalReason`、`TestTransientDatabaseOutageDoesNotCompleteTask`。并发测试发现 Reconciliation 曾读取过时的任务状态，导致取消后 Intent 重开；现对任务与 Lease 同时加行锁，重复 20 轮竞态测试通过。数据库断连测试验证运行不会误报完成，恢复后过期 Lease 可重新领取。这些是场景的组成部分，尚不足以替代六个从 UI 到数据和报告的完整 E2E。
 
 新增 `TestPhase7AutonomousHTTPFindingAndFailoverE2E`：从管理员 API 登录、创建两目标/授权范围、启动任务，到 Planner 并行派工、两个 Worker 访问本地靶场并创建可追溯 Fact/Finding、证明目标、任务完成，检查 API 状态、图、Finding 和 Activity。主 HTTP Stub 返回 402，备用 Profile 接管，独立尝试/用量及 UI 所用 Activity 接口均通过断言；连续 3 次重跑通过。现已在同一测试中补上真实 HTTP 流量的 baseline/proof 绑定、人工确认、报告保存、普通流量删除后的 Evidence 原字节读取与证据 ZIP 导出，以及解除绑定后的 Blob 回收；Linux 容器和独立 PostgreSQL 下通过。它覆盖 E2E-01/02/04 的后端主链路，仍需纯浏览器完整操作、Worker 新资产写入和串行 Todo 等场景验收。

@@ -12,8 +12,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/X9st/TianFaSRC/internal/auth"
+	"github.com/X9st/TianFaSRC/internal/finding"
 	"github.com/X9st/TianFaSRC/internal/identity"
 	"github.com/X9st/TianFaSRC/internal/llm"
 	"github.com/X9st/TianFaSRC/internal/store/postgres"
@@ -589,6 +591,286 @@ func TestSchedulerCrashHelper(t *testing.T) {
 	}
 	fmt.Println("CLAIMED", c.IntentID, c.RunID)
 	select {}
+}
+
+func TestPlannerCrashHelper(t *testing.T) {
+	dsn := os.Getenv("TIANFA_PLANNER_CRASH_DB")
+	if dsn == "" {
+		return
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	claim, ok, err := (Scheduler{Engine: Engine{Pool: pool}}).ClaimPlanner(ctx)
+	if err != nil || !ok {
+		t.Fatalf("claim planner: %v %v", ok, err)
+	}
+	fmt.Println("CLAIMED", claim.TaskID, claim.Fence)
+	select {}
+}
+
+func TestKilledPlannerLeaseIsFencedAndReported(t *testing.T) {
+	s, orgID, taskID, _ := schedulerFixture(t)
+	ctx := context.Background()
+	if _, err := s.Engine.Pool.Exec(ctx, `INSERT INTO planner_wakes(task_id,due_at,reason) VALUES($1,now(),'test.planner_crash')`, taskID); err != nil {
+		t.Fatal(err)
+	}
+	dsn, err := url.Parse(os.Getenv("TIANFA_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsn.Path = "/" + s.Engine.Pool.Config().ConnConfig.Database
+	cmd := exec.Command(os.Args[0], "-test.run=^TestPlannerCrashHelper$")
+	cmd.Env = append(os.Environ(), "TIANFA_PLANNER_CRASH_DB="+dsn.String())
+	cmd.Stderr = os.Stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() || !strings.HasPrefix(scanner.Text(), "CLAIMED ") {
+		_ = cmd.Process.Kill()
+		t.Fatalf("planner helper did not claim: %q (%v)", scanner.Text(), scanner.Err())
+	}
+	claimed := strings.Fields(scanner.Text())
+	if len(claimed) != 3 || claimed[1] != taskID {
+		_ = cmd.Process.Kill()
+		t.Fatalf("unexpected planner claim: %q", scanner.Text())
+	}
+	var oldFence int64
+	if _, err := fmt.Sscan(claimed[2], &oldFence); err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatal(err)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+	if _, err := s.Engine.Pool.Exec(ctx, `UPDATE planner_wakes SET expires_at=now()-interval '1 second' WHERE task_id=$1`, taskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	oldClaim := Claim{TaskID: taskID, OrganizationID: orgID, Fence: oldFence}
+	if err := s.FinishPlanner(ctx, oldClaim, nil); !errors.Is(err, task.ErrConflict) {
+		t.Fatalf("expired planner was not fenced: %v", err)
+	}
+	var pending bool
+	var reason string
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT pending,reason FROM planner_wakes WHERE task_id=$1`, taskID).Scan(&pending, &reason); err != nil || !pending || reason != "lease_expired" {
+		t.Fatalf("planner wake after crash: pending=%v reason=%q err=%v", pending, reason, err)
+	}
+	if _, err := (task.Store{Pool: s.Engine.Pool}).ProjectActivities(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	var recoveryActivities int
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM activities WHERE task_id=$1 AND kind='planner.reconciled'`, taskID).Scan(&recoveryActivities); err != nil || recoveryActivities != 1 {
+		t.Fatalf("planner recovery activity=%d err=%v", recoveryActivities, err)
+	}
+	newClaim, ok, err := s.ClaimPlanner(ctx)
+	if err != nil || !ok || newClaim.TaskID != taskID || newClaim.Fence <= oldClaim.Fence {
+		t.Fatalf("planner was not reclaimed: %+v %v %v", newClaim, ok, err)
+	}
+}
+
+func TestOutboxCrashHelper(t *testing.T) {
+	dsn := os.Getenv("TIANFA_OUTBOX_CRASH_DB")
+	taskID := os.Getenv("TIANFA_OUTBOX_CRASH_TASK")
+	assetID := os.Getenv("TIANFA_OUTBOX_CRASH_ASSET")
+	if dsn == "" || taskID == "" || assetID == "" {
+		return
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var orgID, actorID string
+	if err := pool.QueryRow(ctx, `SELECT organization_id,created_by FROM tasks WHERE id=$1`, taskID).Scan(&orgID, &actorID); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("TIANFA_FINDING_CRASH_BEFORE_COMMIT") == "1" {
+		fmt.Println("STARTED")
+	}
+	item, err := (finding.Store{Pool: pool}).Create(ctx, orgID, actorID, finding.Input{TaskID: taskID, Title: "崩溃边界线索", VulnerabilityType: "authorization", Location: "/fixture", Severity: "high", AssetIDs: []string{assetID}, Impact: "受控数据可读", ReproductionSteps: []string{"GET /fixture"}, ObservedResult: "受控响应", Recommendation: "检查权限"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var eventID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM domain_events WHERE task_id=$1 AND event_type='finding.created' AND payload->>'finding_id'=$2`, taskID, item.ID).Scan(&eventID); err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println("COMMITTED", item.ID, eventID)
+	select {}
+}
+
+func TestFindingOutboxSurvivesProcessKill(t *testing.T) {
+	s, orgID, taskID, _ := schedulerFixture(t)
+	ctx := context.Background()
+	var actorID string
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT created_by FROM tasks WHERE id=$1`, taskID).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	asset, err := (task.Store{Pool: s.Engine.Pool}).UpsertAsset(ctx, orgID, actorID, task.AssetInput{Kind: "endpoint", Value: "https://example.invalid/fixture", SourceTaskID: &taskID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsn, err := url.Parse(os.Getenv("TIANFA_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsn.Path = "/" + s.Engine.Pool.Config().ConnConfig.Database
+	cmd := exec.Command(os.Args[0], "-test.run=^TestOutboxCrashHelper$")
+	cmd.Env = append(os.Environ(), "TIANFA_OUTBOX_CRASH_DB="+dsn.String(), "TIANFA_OUTBOX_CRASH_TASK="+taskID, "TIANFA_OUTBOX_CRASH_ASSET="+asset.ID)
+	cmd.Stderr = os.Stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() || !strings.HasPrefix(scanner.Text(), "COMMITTED ") {
+		_ = cmd.Process.Kill()
+		t.Fatalf("helper did not commit an event: %q (%v)", scanner.Text(), scanner.Err())
+	}
+	committed := strings.Fields(scanner.Text())
+	if len(committed) != 3 {
+		_ = cmd.Process.Kill()
+		t.Fatalf("unexpected helper output: %q", scanner.Text())
+	}
+	findingID, eventID := committed[1], committed[2]
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+	var unconsumed int
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM event_consumptions WHERE event_id=$1`, eventID).Scan(&unconsumed); err != nil || unconsumed != 0 {
+		t.Fatalf("event consumed before restart: %d %v", unconsumed, err)
+	}
+	restarted := Scheduler{Engine: Engine{Pool: s.Engine.Pool}, OwnerID: "restarted-scheduler"}
+	activities := task.Store{Pool: s.Engine.Pool}
+	for range 2 {
+		if _, err := restarted.PumpEvents(ctx, 100); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := activities.ProjectActivities(ctx, 100); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var eventCount, plannerCount, activityCount int
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM domain_events WHERE id=$1 AND task_id=$2 AND organization_id=$3`, eventID, taskID, orgID).Scan(&eventCount); err != nil {
+		t.Fatal(err)
+	}
+	var findingCount, auditCount int
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM findings f JOIN exploration_nodes n ON n.id=f.node_id WHERE f.id=$1 AND f.task_id=$2 AND n.kind='finding'`, findingID, taskID).Scan(&findingCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE action='finding.created' AND resource_id=$1`, findingID).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM event_consumptions WHERE event_id=$1 AND consumer_name='planner'`, eventID).Scan(&plannerCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM activities WHERE event_id=$1 AND task_id=$2 AND kind='finding.created'`, eventID, taskID).Scan(&activityCount); err != nil {
+		t.Fatal(err)
+	}
+	var pending bool
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT pending FROM planner_wakes WHERE task_id=$1`, taskID).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if findingCount != 1 || auditCount != 1 || eventCount != 1 || plannerCount != 1 || activityCount != 1 || !pending {
+		t.Fatalf("recovered finding=%d audit=%d event=%d planner=%d activity=%d pending=%v", findingCount, auditCount, eventCount, plannerCount, activityCount, pending)
+	}
+}
+
+func TestFindingWriteKillRollsBackGraphAndOutbox(t *testing.T) {
+	s, orgID, taskID, _ := schedulerFixture(t)
+	ctx := context.Background()
+	var actorID string
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT created_by FROM tasks WHERE id=$1`, taskID).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	asset, err := (task.Store{Pool: s.Engine.Pool}).UpsertAsset(ctx, orgID, actorID, task.AssetInput{Kind: "endpoint", Value: "https://example.invalid/fixture", SourceTaskID: &taskID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := s.Engine.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback(ctx)
+	if _, err := lock.Exec(ctx, `LOCK TABLE exploration_edges IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	dsn, err := url.Parse(os.Getenv("TIANFA_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsn.Path = "/" + s.Engine.Pool.Config().ConnConfig.Database
+	cmd := exec.Command(os.Args[0], "-test.run=^TestOutboxCrashHelper$")
+	cmd.Env = append(os.Environ(), "TIANFA_OUTBOX_CRASH_DB="+dsn.String(), "TIANFA_OUTBOX_CRASH_TASK="+taskID, "TIANFA_OUTBOX_CRASH_ASSET="+asset.ID, "TIANFA_FINDING_CRASH_BEFORE_COMMIT=1")
+	cmd.Stderr = os.Stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() || scanner.Text() != "STARTED" {
+		_ = cmd.Process.Kill()
+		t.Fatalf("finding helper did not start: %q (%v)", scanner.Text(), scanner.Err())
+	}
+	blocked := false
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := s.Engine.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND query LIKE 'INSERT INTO exploration_edges%' AND wait_event_type='Lock')`).Scan(&blocked); err != nil {
+			_ = cmd.Process.Kill()
+			t.Fatal(err)
+		}
+		if blocked {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !blocked {
+		_ = cmd.Process.Kill()
+		t.Fatal("finding write did not reach the graph edge before kill")
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+	if err := lock.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var nodes, findings, events, audits int
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM exploration_nodes WHERE task_id=$1 AND kind='finding'`, taskID).Scan(&nodes); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM findings WHERE task_id=$1`, taskID).Scan(&findings); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM domain_events WHERE task_id=$1 AND event_type='finding.created'`, taskID).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE action='finding.created' AND organization_id=$1`, orgID).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if nodes != 0 || findings != 0 || events != 0 || audits != 0 {
+		t.Fatalf("partial finding commit after kill: nodes=%d findings=%d events=%d audits=%d", nodes, findings, events, audits)
+	}
 }
 
 func TestKilledWorkerProcessRecovers(t *testing.T) {

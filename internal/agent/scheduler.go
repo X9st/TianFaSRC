@@ -594,8 +594,29 @@ func (s Scheduler) Reconcile(ctx context.Context) (int, error) {
 			return 0, err
 		}
 	}
-	if _, err = tx.Exec(ctx, `UPDATE planner_wakes SET pending=true,owner_id=NULL,expires_at=NULL,due_at=now(),updated_at=now() WHERE expires_at<now()`); err != nil {
+	plannerRows, err := tx.Query(ctx, `UPDATE planner_wakes w SET pending=true,owner_id=NULL,expires_at=NULL,fence=w.fence+1,due_at=now(),reason='lease_expired',updated_at=now() FROM tasks t WHERE w.task_id=t.id AND w.expires_at<now() RETURNING w.task_id,t.organization_id`)
+	if err != nil {
 		return 0, err
+	}
+	type expiredPlanner struct{ taskID, orgID string }
+	planners := []expiredPlanner{}
+	for plannerRows.Next() {
+		var x expiredPlanner
+		if err := plannerRows.Scan(&x.taskID, &x.orgID); err != nil {
+			plannerRows.Close()
+			return 0, err
+		}
+		planners = append(planners, x)
+	}
+	err = plannerRows.Err()
+	plannerRows.Close()
+	if err != nil {
+		return 0, err
+	}
+	for _, x := range planners {
+		if err := event(ctx, tx, x.orgID, x.taskID, "planner.reconciled", map[string]any{"reason": "规划租约到期，等待重新领取"}); err != nil {
+			return 0, err
+		}
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO planner_wakes(task_id,due_at,reason) SELECT t.id,now(),'reconciliation' FROM tasks t WHERE t.status IN ('queued','running') AND NOT EXISTS(SELECT 1 FROM planner_wakes w WHERE w.task_id=t.id) ON CONFLICT DO NOTHING`); err != nil {
 		return 0, err
@@ -606,8 +627,29 @@ func (s Scheduler) Reconcile(ctx context.Context) (int, error) {
 	if _, err = tx.Exec(ctx, `UPDATE agent_runs r SET status='interrupted',error_class='orphaned_after_restart',completed_at=now() WHERE r.status='running' AND r.started_at<now()-interval '30 seconds' AND NOT EXISTS(SELECT 1 FROM worker_leases l WHERE l.run_id=r.id AND l.expires_at>now()) AND NOT EXISTS(SELECT 1 FROM planner_wakes w WHERE w.task_id=r.task_id AND w.expires_at>now())`); err != nil {
 		return 0, err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE tool_calls c SET status='failed',error_class='process_interrupted',summary='进程中断，执行结果未确认；请使用新的调用重试',completed_at=now() WHERE c.status='running' AND c.started_at<now()-interval '30 seconds' AND NOT EXISTS(SELECT 1 FROM worker_leases l WHERE l.run_id=c.run_id AND l.expires_at>now())`); err != nil {
+	toolRows, err := tx.Query(ctx, `UPDATE tool_calls c SET status='failed',error_class='process_interrupted',summary='进程中断，执行结果未确认；请使用新的调用重试',completed_at=now() WHERE c.status='running' AND c.started_at<now()-interval '30 seconds' AND NOT EXISTS(SELECT 1 FROM worker_leases l WHERE l.run_id=c.run_id AND l.expires_at>now()) RETURNING c.id,c.task_id,c.organization_id`)
+	if err != nil {
 		return 0, err
+	}
+	type interruptedTool struct{ id, taskID, orgID string }
+	interruptedTools := []interruptedTool{}
+	for toolRows.Next() {
+		var x interruptedTool
+		if err := toolRows.Scan(&x.id, &x.taskID, &x.orgID); err != nil {
+			toolRows.Close()
+			return 0, err
+		}
+		interruptedTools = append(interruptedTools, x)
+	}
+	err = toolRows.Err()
+	toolRows.Close()
+	if err != nil {
+		return 0, err
+	}
+	for _, x := range interruptedTools {
+		if err := event(ctx, tx, x.orgID, x.taskID, "tool.reconciled", map[string]any{"tool_call_id": x.id, "status": "failed", "reason": "进程中断，执行结果未确认"}); err != nil {
+			return 0, err
+		}
 	}
 	if _, err = tx.Exec(ctx, `UPDATE llm_attempts a SET status='failed',error_class='process_interrupted',completed_at=now() FROM agent_runs r WHERE a.run_id=r.id AND a.status='running' AND r.status IN ('interrupted','stopped','paused','blocked','failed')`); err != nil {
 		return 0, err

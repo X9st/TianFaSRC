@@ -2,6 +2,7 @@ package agent
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +10,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -20,7 +24,9 @@ import (
 	"github.com/X9st/TianFaSRC/internal/policy"
 	"github.com/X9st/TianFaSRC/internal/secret"
 	"github.com/X9st/TianFaSRC/internal/skill"
+	"github.com/X9st/TianFaSRC/internal/task"
 	"github.com/X9st/TianFaSRC/internal/tool"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -77,6 +83,148 @@ func TestToolCallIdempotencyScopeAndAudit(t *testing.T) {
 	blocked, err = d.Execute(ctx, call)
 	if !errors.Is(err, tool.ErrToolBlocked) || blocked.Status != "blocked" || hits.Load() != 1 {
 		t.Fatalf("disabled binding: %+v hits=%d err=%v", blocked, hits.Load(), err)
+	}
+}
+
+func TestToolWritebackCrashHelper(t *testing.T) {
+	dsn := os.Getenv("TIANFA_TOOL_CRASH_DB")
+	if dsn == "" {
+		return
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	input, _ := json.Marshal(map[string]any{"url": os.Getenv("TIANFA_TOOL_CRASH_URL"), "method": "GET"})
+	call := tool.Call{OrganizationID: os.Getenv("TIANFA_TOOL_CRASH_ORG"), TaskID: os.Getenv("TIANFA_TOOL_CRASH_TASK"), IntentID: os.Getenv("TIANFA_TOOL_CRASH_INTENT"), RunID: os.Getenv("TIANFA_TOOL_CRASH_RUN"), ActorID: os.Getenv("TIANFA_TOOL_CRASH_ACTOR"), Name: "http.read", Input: input, IdempotencyKey: os.Getenv("TIANFA_TOOL_CRASH_KEY")}
+	fmt.Println("STARTED")
+	if _, err := (tool.Dispatcher{Pool: pool, DataDir: os.Getenv("TIANFA_TOOL_CRASH_DATA"), Enforcer: policy.Enforcer{TestOnlyAllowPrivate: true}}).Execute(ctx, call); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestToolEffectBeforeWritebackProcessKill(t *testing.T) {
+	s, orgID, taskID, _ := schedulerFixture(t)
+	ctx := context.Background()
+	requestSeen := make(chan struct{}, 1)
+	releaseResponse := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestSeen <- struct{}{}
+		<-releaseResponse
+		_, _ = w.Write([]byte("observed once"))
+	}))
+	defer server.Close()
+	port, _ := strconv.Atoi(strings.Split(server.URL, ":")[2])
+	if _, err := s.Engine.Pool.Exec(ctx, `UPDATE task_scopes SET kind='ip',value='127.0.0.1',normalized_value='127.0.0.1',ports=ARRAY[$2]::int[] WHERE task_id=$1`, taskID, port); err != nil {
+		t.Fatal(err)
+	}
+	claim, ok, err := s.ClaimWorker(ctx)
+	if err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	if _, err := s.Engine.Pool.Exec(ctx, `UPDATE task_intents SET status='running' WHERE id=$1`, claim.IntentID); err != nil {
+		t.Fatal(err)
+	}
+	dsn, err := url.Parse(os.Getenv("TIANFA_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsn.Path = "/" + s.Engine.Pool.Config().ConnConfig.Database
+	key := "crash-before-tool-writeback-" + taskID
+	dataDir := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestToolWritebackCrashHelper$")
+	cmd.Env = append(os.Environ(), "TIANFA_TOOL_CRASH_DB="+dsn.String(), "TIANFA_TOOL_CRASH_ORG="+orgID, "TIANFA_TOOL_CRASH_TASK="+taskID, "TIANFA_TOOL_CRASH_INTENT="+claim.IntentID, "TIANFA_TOOL_CRASH_RUN="+claim.RunID, "TIANFA_TOOL_CRASH_ACTOR="+claim.ActorID, "TIANFA_TOOL_CRASH_URL="+server.URL, "TIANFA_TOOL_CRASH_DATA="+dataDir, "TIANFA_TOOL_CRASH_KEY="+key)
+	cmd.Stderr = os.Stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() || scanner.Text() != "STARTED" {
+		close(releaseResponse)
+		t.Fatalf("tool helper did not start: %q (%v)", scanner.Text(), scanner.Err())
+	}
+	select {
+	case <-requestSeen:
+	case <-time.After(5 * time.Second):
+		close(releaseResponse)
+		t.Fatal("tool did not reach the target")
+	}
+	lockTx, err := s.Engine.Pool.Begin(ctx)
+	if err != nil {
+		close(releaseResponse)
+		t.Fatal(err)
+	}
+	defer lockTx.Rollback(ctx)
+	if _, err := lockTx.Exec(ctx, `SELECT 1 FROM task_budgets WHERE task_id=$1 FOR UPDATE`, taskID); err != nil {
+		close(releaseResponse)
+		t.Fatal(err)
+	}
+	close(releaseResponse)
+	blocked := false
+	for deadline := time.Now().Add(4 * time.Second); time.Now().Before(deadline); {
+		if err := s.Engine.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE 'UPDATE task_budgets SET tool_calls=%')`).Scan(&blocked); err != nil {
+			t.Fatal(err)
+		}
+		if blocked {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !blocked {
+		t.Fatal("tool writeback did not reach the locked settlement row")
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+	if err := lockTx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var callID, status string
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT id,status FROM tool_calls WHERE idempotency_key=$1`, key).Scan(&callID, &status); err != nil || status != "running" {
+		t.Fatalf("uncommitted result: id=%s status=%s err=%v", callID, status, err)
+	}
+	var trafficCount int
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM traffic WHERE tool_call_id=$1`, callID).Scan(&trafficCount); err != nil || trafficCount != 1 {
+		t.Fatalf("captured traffic=%d err=%v", trafficCount, err)
+	}
+	if _, err := s.Engine.Pool.Exec(ctx, `UPDATE worker_leases SET expires_at=now()-interval '1 second' WHERE run_id=$1`, claim.RunID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Engine.Pool.Exec(ctx, `UPDATE tool_calls SET started_at=now()-interval '31 seconds' WHERE id=$1`, callID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var errorClass string
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT status,error_class FROM tool_calls WHERE id=$1`, callID).Scan(&status, &errorClass); err != nil || status != "failed" || errorClass != "process_interrupted" {
+		t.Fatalf("recovered tool: status=%s class=%s err=%v", status, errorClass, err)
+	}
+	input, _ := json.Marshal(map[string]any{"url": server.URL, "method": "GET"})
+	d := tool.Dispatcher{Pool: s.Engine.Pool, DataDir: dataDir, Enforcer: policy.Enforcer{TestOnlyAllowPrivate: true}}
+	result, err := d.Execute(ctx, tool.Call{OrganizationID: orgID, TaskID: taskID, IntentID: claim.IntentID, RunID: claim.RunID, ActorID: claim.ActorID, Name: "http.read", Input: input, IdempotencyKey: key})
+	if !errors.Is(err, tool.ErrToolBlocked) || result.ID != callID {
+		t.Fatalf("replayed side effect: %+v %v", result, err)
+	}
+	select {
+	case <-requestSeen:
+		t.Fatal("same idempotency key repeated the HTTP effect")
+	default:
+	}
+	if _, err := (task.Store{Pool: s.Engine.Pool}).ProjectActivities(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	var activities int
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM activities WHERE task_id=$1 AND kind='tool.reconciled'`, taskID).Scan(&activities); err != nil || activities != 1 {
+		t.Fatalf("tool recovery activities=%d err=%v", activities, err)
 	}
 }
 
