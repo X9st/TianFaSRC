@@ -57,14 +57,14 @@ type Dispatcher struct {
 }
 
 func Names() []string {
-	return []string{"http.read", "workspace.read", "workspace.write", "workspace.list", "skill.load", "finding.report", "command.run"}
+	return []string{"http.read", "workspace.read", "workspace.write", "workspace.list", "skill.load", "finding.report", "asset.upsert", "command.run"}
 }
 
 func (d Dispatcher) AvailableNames() []string {
 	if d.CommandImage != "" {
 		return Names()
 	}
-	return Names()[:6]
+	return Names()[:7]
 }
 
 func (d Dispatcher) AvailableForRun(ctx context.Context, orgID, runID string) ([]string, error) {
@@ -150,6 +150,14 @@ func validateInput(name string, raw json.RawMessage) error {
 			return task.ErrInvalid
 		}
 		if value.TaskID != "" || value.SourceIntentID != "" || value.SourceRunID != "" || len(value.AssetIDs) == 0 {
+			return task.ErrInvalid
+		}
+	case "asset.upsert":
+		var value struct {
+			Kind  string `json:"kind"`
+			Value string `json:"value"`
+		}
+		if err := decodeStrict(raw, &value); err != nil || value.Kind != "endpoint" || value.Value == "" {
 			return task.ErrInvalid
 		}
 	default:
@@ -381,6 +389,22 @@ func (d Dispatcher) Execute(ctx context.Context, call Call) (Outcome, error) {
 				result = Result{Summary: "已创建或合并 Finding 草稿：" + item.Title, Output: payload, ContentType: "application/json"}
 			}
 		}
+	case "asset.upsert":
+		var input struct {
+			Kind  string `json:"kind"`
+			Value string `json:"value"`
+		}
+		if executeErr = decodeStrict(call.Input, &input); executeErr == nil {
+			var item task.Asset
+			item, executeErr = (task.Store{Pool: d.Pool}).UpsertAsset(ctx, call.OrganizationID, call.ActorID, task.AssetInput{Kind: input.Kind, Value: input.Value, SourceTaskID: &call.TaskID})
+			if executeErr == nil {
+				_, executeErr = d.Pool.Exec(ctx, `INSERT INTO exploration_anchors(node_id,asset_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, call.IntentID, item.ID)
+				if executeErr == nil {
+					payload, _ := json.Marshal(item)
+					result = Result{Summary: "已记录受控 HTTP 观察中的新资产：" + item.DisplayValue, Output: payload, ContentType: "application/json"}
+				}
+			}
+		}
 	default:
 		if strings.HasPrefix(call.Name, "custom__") {
 			result, executeErr = d.executeCustom(ctx, call)
@@ -458,7 +482,7 @@ func deref(value *string) string {
 
 func (d Dispatcher) needsApproval(mode, name string) bool {
 	if mode == "approval" {
-		return name == "workspace.write" || name == "finding.report" || name == "command.run" || strings.HasPrefix(name, "mcp__")
+		return name == "workspace.write" || name == "finding.report" || name == "asset.upsert" || name == "command.run" || strings.HasPrefix(name, "mcp__")
 	}
 	return mode == "graded" && (name == "command.run" || strings.HasPrefix(name, "mcp__"))
 }
@@ -472,6 +496,24 @@ func (d Dispatcher) preflight(ctx context.Context, call Call, detail task.Detail
 		if !observed {
 			return errors.New("上报漏洞前必须有同一 Run 的真实 HTTP 观察")
 		}
+	}
+	if call.Name == "asset.upsert" {
+		var input struct {
+			Kind  string `json:"kind"`
+			Value string `json:"value"`
+		}
+		if err := decodeStrict(call.Input, &input); err != nil {
+			return err
+		}
+		var observed bool
+		if err := d.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM tool_calls WHERE run_id=$1 AND task_id=$2 AND intent_id=$3 AND name='http.read' AND status='succeeded' AND input->>'url'=$4)`, call.RunID, call.TaskID, call.IntentID, input.Value).Scan(&observed); err != nil {
+			return err
+		}
+		if !observed {
+			return errors.New("记录新资产前必须有同一 Run 的对应 HTTP 观察")
+		}
+		_, err := d.Enforcer.Authorize(ctx, input.Value, detail.Scope, detail.Task.ScopeVersion)
+		return err
 	}
 	var urlText string
 	if call.Name == "http.read" {

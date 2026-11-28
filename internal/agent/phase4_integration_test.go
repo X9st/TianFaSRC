@@ -50,6 +50,9 @@ func TestToolCallIdempotencyScopeAndAudit(t *testing.T) {
 	if _, err := s.Engine.Pool.Exec(ctx, `UPDATE task_intents SET status='running' WHERE id=$1`, c.IntentID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.Engine.Pool.Exec(ctx, `UPDATE worker_run_budgets SET max_tool_calls=12 WHERE run_id=$1`, c.RunID); err != nil {
+		t.Fatal(err)
+	}
 	d := tool.Dispatcher{Pool: s.Engine.Pool, DataDir: t.TempDir(), Enforcer: policy.Enforcer{TestOnlyAllowPrivate: true}}
 	input, _ := json.Marshal(map[string]any{"url": server.URL, "method": "GET"})
 	call := tool.Call{OrganizationID: orgID, TaskID: taskID, IntentID: c.IntentID, RunID: c.RunID, ActorID: c.ActorID, Name: "http.read", Input: input, IdempotencyKey: "test-http-idempotent"}
@@ -61,6 +64,27 @@ func TestToolCallIdempotencyScopeAndAudit(t *testing.T) {
 	if err != nil || first.ID != second.ID || hits.Load() != 1 {
 		t.Fatalf("repeat=%+v hits=%d err=%v", second, hits.Load(), err)
 	}
+	call.Name = "asset.upsert"
+	call.Input, _ = json.Marshal(map[string]string{"kind": "endpoint", "value": server.URL + "/unseen"})
+	call.IdempotencyKey = "test-asset-unobserved"
+	if blocked, err := d.Execute(ctx, call); !errors.Is(err, tool.ErrToolBlocked) || blocked.Status != "blocked" {
+		t.Fatalf("unobserved asset: %+v %v", blocked, err)
+	}
+	call.Input, _ = json.Marshal(map[string]string{"kind": "endpoint", "value": server.URL})
+	call.IdempotencyKey = "test-asset-observed"
+	assetResult, err := d.Execute(ctx, call)
+	if err != nil || assetResult.Status != "succeeded" || hits.Load() != 1 {
+		t.Fatalf("observed asset: %+v hits=%d err=%v", assetResult, hits.Load(), err)
+	}
+	assetRepeat, err := d.Execute(ctx, call)
+	if err != nil || assetRepeat.ID != assetResult.ID {
+		t.Fatalf("asset replay: %+v %v", assetRepeat, err)
+	}
+	var anchors int
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM exploration_anchors a JOIN assets x ON x.id=a.asset_id WHERE a.node_id=$1 AND x.display_value=$2`, c.IntentID, server.URL).Scan(&anchors); err != nil || anchors != 1 {
+		t.Fatalf("new asset lineage=%d err=%v", anchors, err)
+	}
+	call.Name = "http.read"
 	call.IdempotencyKey = "test-http-outside-scope"
 	call.Input, _ = json.Marshal(map[string]any{"url": "http://127.0.0.2:" + strconv.Itoa(port) + "/"})
 	blocked, err := d.Execute(ctx, call)
@@ -83,6 +107,93 @@ func TestToolCallIdempotencyScopeAndAudit(t *testing.T) {
 	blocked, err = d.Execute(ctx, call)
 	if !errors.Is(err, tool.ErrToolBlocked) || blocked.Status != "blocked" || hits.Load() != 1 {
 		t.Fatalf("disabled binding: %+v hits=%d err=%v", blocked, hits.Load(), err)
+	}
+}
+
+func TestPartialWorkerStreamDoesNotRepeatToolEffect(t *testing.T) {
+	s, orgID, taskID, _ := schedulerFixture(t)
+	ctx := context.Background()
+	var actorID string
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT created_by FROM tasks WHERE id=$1`, taskID).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	var targetHits, primaryHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHits.Add(1)
+		_, _ = w.Write([]byte("stream fixture"))
+	}))
+	defer target.Close()
+	port, _ := strconv.Atoi(strings.Split(target.URL, ":")[2])
+	if _, err := s.Engine.Pool.Exec(ctx, `UPDATE task_scopes SET kind='ip',value='127.0.0.1',normalized_value='127.0.0.1',ports=ARRAY[$2]::int[] WHERE task_id=$1`, taskID, port); err != nil {
+		t.Fatal(err)
+	}
+	fragment := `{"tool_calls":[{"name":"http.read","input":`
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		primaryHits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		payload, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]string{"content": fragment}}}})
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+	}))
+	defer primary.Close()
+	var continued atomic.Bool
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []llm.Message `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		response := `{"summary":"已完成单次 HTTP 观察"}`
+		for _, message := range body.Messages {
+			if message.Role == "assistant" && message.Content == fragment {
+				continued.Store(true)
+				response = fmt.Sprintf(`{"url":%q,"method":"GET"}}]}`, target.URL)
+				break
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": response}}}})
+	}))
+	defer backup.Close()
+	secrets, err := secret.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := llm.Store{Pool: s.Engine.Pool, Secrets: secrets}
+	enabled := true
+	createProfile := func(name, endpoint string, stream bool) llm.Profile {
+		item, err := profiles.Create(ctx, orgID, actorID, llm.CreateInput{Name: name, Format: "openai-chat", BaseURL: endpoint + "/v1", Model: "stream-fixture", Credential: llm.CredentialWrite{SecretValue: name + "-secret"}, Enabled: &enabled, Stream: &stream, ContextWindow: 8192, MaxOutputTokens: 512, RatePerSecond: 100, RatePerMinute: 1000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return item
+	}
+	first := createProfile("stream-primary", primary.URL, true)
+	second := createProfile("stream-backup", backup.URL, false)
+	if err := profiles.SetDefaultChain(ctx, orgID, actorID, []string{first.ID, second.ID}); err != nil {
+		t.Fatal(err)
+	}
+	s.Engine.Profiles = profiles
+	s.Engine.Router = llm.Router{Store: profiles}
+	s.Tools = &tool.Dispatcher{Pool: s.Engine.Pool, DataDir: t.TempDir(), Enforcer: policy.Enforcer{TestOnlyAllowPrivate: true}}
+	claim, ok, err := s.ClaimWorker(ctx)
+	if err != nil || !ok {
+		t.Fatalf("worker claim: %v %v", ok, err)
+	}
+	if err := s.RunWorker(ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+	var calls, partial int
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM tool_calls WHERE task_id=$1 AND name='http.read'`, taskID).Scan(&calls); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Engine.Pool.QueryRow(ctx, `SELECT count(*) FROM llm_attempts WHERE run_id=$1 AND profile_id=$2 AND status='partial'`, claim.RunID, first.ID).Scan(&partial); err != nil {
+		t.Fatal(err)
+	}
+	if !continued.Load() || targetHits.Load() != 1 || primaryHits.Load() != 1 || calls != 1 || partial != 1 {
+		t.Fatalf("stream continuation=%v target=%d primary=%d tools=%d partial=%d", continued.Load(), targetHits.Load(), primaryHits.Load(), calls, partial)
 	}
 }
 

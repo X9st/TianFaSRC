@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/X9st/TianFaSRC/internal/agent"
 	"github.com/X9st/TianFaSRC/internal/identity"
 	"github.com/X9st/TianFaSRC/internal/task"
 	"github.com/X9st/TianFaSRC/internal/tool"
@@ -561,13 +560,37 @@ func (api phase6API) postConversation(w http.ResponseWriter, r *http.Request) {
 			apiError(w, r, task.ErrInvalid)
 			return
 		}
+		rows, queryErr := tx.Query(r.Context(), `SELECT objective FROM task_intents WHERE task_id=$1 AND goal_id=$2 AND (status IN ('open','leased','running','blocked') OR updated_at>now()-interval '7 days')`, id, input.GoalID)
+		if queryErr != nil {
+			apiError(w, r, queryErr)
+			return
+		}
+		duplicate := false
+		for rows.Next() {
+			var existing string
+			if err = rows.Scan(&existing); err != nil {
+				rows.Close()
+				apiError(w, r, err)
+				return
+			}
+			duplicate = duplicate || agent.SameDirection(existing, input.Text)
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			apiError(w, r, err)
+			return
+		}
+		rows.Close()
+		if duplicate {
+			writeProblem(w, r, 409, "duplicate-intent", "验证方向重复", "已有相同或相似的验证方向；请查看任务方向并补充新的验证目标")
+			return
+		}
 		intent := identity.NewID()
-		dedup := sha256.Sum256([]byte(input.GoalID + ":" + strings.ToLower(input.Text)))
 		if _, err = tx.Exec(r.Context(), `INSERT INTO exploration_nodes(id,task_id,kind,state,summary) VALUES($1,$2,'intent','open',$3)`, intent, id, input.Text); err != nil {
 			apiError(w, r, err)
 			return
 		}
-		if _, err = tx.Exec(r.Context(), `INSERT INTO task_intents(id,task_id,goal_id,objective,success_criteria,dedup_key,priority,budget_model_rounds,budget_tool_calls,budget_tokens,budget_seconds,budget_reason) VALUES($1,$2,$3,$4,$5,$6,9,5,6,16000,120,'高优先级方向的系统默认值')`, intent, id, input.GoalID, input.Text, input.SuccessCriteria, hex.EncodeToString(dedup[:])); err != nil {
+		if _, err = tx.Exec(r.Context(), `INSERT INTO task_intents(id,task_id,goal_id,objective,success_criteria,dedup_key,priority,budget_model_rounds,budget_tool_calls,budget_tokens,budget_seconds,budget_reason) VALUES($1,$2,$3,$4,$5,$6,9,5,6,16000,120,'高优先级方向的系统默认值')`, intent, id, input.GoalID, input.Text, input.SuccessCriteria, agent.DirectionKey(input.GoalID, input.Text)); err != nil {
 			apiError(w, r, err)
 			return
 		}

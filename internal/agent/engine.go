@@ -399,12 +399,12 @@ func parseObject(raw string, dst any) error {
 	raw = strings.TrimSuffix(raw, "```")
 	return json.Unmarshal([]byte(strings.TrimSpace(raw)), dst)
 }
-func dedup(goalID, objective string) string {
+func DirectionKey(goalID, objective string) string {
 	normalized := strings.ToLower(whitespace.ReplaceAllString(strings.TrimSpace(objective), " "))
 	sum := sha256.Sum256([]byte(goalID + ":" + normalized))
 	return hex.EncodeToString(sum[:])
 }
-func sameDirection(a, b string) bool {
+func SameDirection(a, b string) bool {
 	a = strings.ToLower(whitespace.ReplaceAllString(strings.TrimSpace(a), ""))
 	b = strings.ToLower(whitespace.ReplaceAllString(strings.TrimSpace(b), ""))
 	if a == b {
@@ -635,28 +635,34 @@ func (e Engine) insertIntents(ctx context.Context, orgID, taskID, raw string, li
 			}
 			todoRef = id
 		}
-		key := dedup(candidate.GoalID, objective)
+		key := DirectionKey(candidate.GoalID, objective)
 		var prior string
 		err = tx.QueryRow(ctx, `SELECT id FROM task_intents WHERE task_id=$1 AND dedup_key=$2`, taskID, key).Scan(&prior)
 		if err == nil {
+			if todoRef != nil {
+				if _, err := tx.Exec(ctx, `UPDATE task_todos SET intent_id=$2,updated_at=now() WHERE id=$1`, todoRef, prior); err != nil {
+					return nil, err
+				}
+			}
 			continue
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return nil, err
 		}
-		rows, err := tx.Query(ctx, `SELECT objective FROM task_intents WHERE task_id=$1 AND goal_id=$2 AND (status IN ('open','running','blocked') OR updated_at>now()-interval '7 days')`, taskID, candidate.GoalID)
+		rows, err := tx.Query(ctx, `SELECT id,objective FROM task_intents WHERE task_id=$1 AND goal_id=$2 AND (status IN ('open','leased','running','blocked') OR updated_at>now()-interval '7 days')`, taskID, candidate.GoalID)
 		if err != nil {
 			return nil, err
 		}
 		duplicate := false
 		for rows.Next() {
-			var other string
-			if err := rows.Scan(&other); err != nil {
+			var otherID, other string
+			if err := rows.Scan(&otherID, &other); err != nil {
 				rows.Close()
 				return nil, err
 			}
-			if sameDirection(other, objective) {
+			if SameDirection(other, objective) {
 				duplicate = true
+				prior = otherID
 			}
 		}
 		if err := rows.Err(); err != nil {
@@ -665,6 +671,11 @@ func (e Engine) insertIntents(ctx context.Context, orgID, taskID, raw string, li
 		}
 		rows.Close()
 		if duplicate {
+			if todoRef != nil {
+				if _, err := tx.Exec(ctx, `UPDATE task_todos SET intent_id=$2,updated_at=now() WHERE id=$1`, todoRef, prior); err != nil {
+					return nil, err
+				}
+			}
 			continue
 		}
 		id := identity.NewID()

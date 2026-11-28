@@ -181,13 +181,18 @@ func TestPauseCancelAndReconcileRaceHasOneTerminalReason(t *testing.T) {
 	if _, err := s.Engine.Pool.Exec(ctx, `UPDATE worker_leases SET expires_at=now()-interval '1 second' WHERE intent_id=$1`, intentID); err != nil {
 		t.Fatal(err)
 	}
+	runCtx, shutdown := context.WithCancel(ctx)
+	runDone := make(chan struct{})
+	go func() { s.Run(runCtx); close(runDone) }()
+	defer func() { shutdown(); <-runDone }()
 	start := make(chan struct{})
-	results := make(chan error, 3)
+	results := make(chan error, 4)
 	var wg sync.WaitGroup
 	for _, operation := range []func() error{
 		func() error { return s.TaskCommand(ctx, orgID, actorID, taskID, "pause") },
 		func() error { return s.TaskCommand(ctx, orgID, actorID, taskID, "cancel") },
 		func() error { _, err := s.Reconcile(ctx); return err },
+		func() error { shutdown(); <-runDone; return nil },
 	} {
 		wg.Add(1)
 		go func(operation func() error) { defer wg.Done(); <-start; results <- operation() }(operation)

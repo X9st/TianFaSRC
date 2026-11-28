@@ -140,6 +140,9 @@ func TestPhase6ConversationWorkspaceAndAudit(t *testing.T) {
 	if out := send("intent", "检查首页访问控制", item.Goals[0].ID, "", "受控响应确认访问控制结果"); out.Code != 201 {
 		t.Fatalf("intent: %d %s", out.Code, out.Body.String())
 	}
+	if out := send("intent", "检查 首页访问控制", item.Goals[0].ID, "", "相同目标的另一种写法"); out.Code != 409 || !strings.Contains(out.Body.String(), "duplicate-intent") {
+		t.Fatalf("similar human intent should be explained: %d %s", out.Code, out.Body.String())
+	}
 	var intentID string
 	if err = pool.QueryRow(ctx, `SELECT id FROM task_intents WHERE task_id=$1 AND objective='检查首页访问控制'`, item.Task.ID).Scan(&intentID); err != nil {
 		t.Fatal(err)
