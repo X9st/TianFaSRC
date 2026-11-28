@@ -29,14 +29,14 @@
 | REQ-ENG-001..006 | 3 | 已实现 | `internal/agent/scheduler.go`、`000004_phase3.sql` | 20 并发领取、任务公平性、事务内 Run/Lease、子进程 Kill 后接管、孤儿 Run 回收 |
 | REQ-PROD-003、006 | 3..6 | 已实现核心 UI | `internal/agent`、`web/app/tasks`、`web/app/conversation` | Intent/Run/Trace/控制、实时 SSE、人工会话与 Worker 独立预算；见 phase6-plan |
 | REQ-PROD-004、008 | 4 | 已实现 | `internal/tool`、`internal/policy`、`web/app/tools` | ToolCall 血缘、输出、策略判定、越界阻断和浏览器验收 |
-| REQ-TOOL-001..004、REQ-SKILL-001..005 | 4 | 核心实现 | `internal/tool`、`internal/skill`、`internal/mcpclient` | Fake MCP、Skill deferred、ZIP、Schema、输出与审计测试；远端 MCP 次级网络边界见 phase4-plan |
+| REQ-TOOL-001..004、REQ-SKILL-001..005 | 4 | 核心实现 | `internal/tool`、`internal/skill`、`internal/mcpclient` | Fake MCP、Skill deferred、ZIP、Schema、连接故障后再次调用、大输出截断与完整读取、审计测试；远端 MCP 次级网络边界见 phase4-plan |
 | REQ-PROD-005 | 5 | 已实现 | `internal/finding`、`internal/blob`、`000006_phase5.sql` | `TestEvidenceSurvivesTrafficDeletionAndRejectsTampering` |
 | REQ-ARCH-008 | 5 | 部分实现 | `internal/finding`、`internal/tool/dispatcher.go` | HTTP 证据与复核确认门槛已实现；命令输出、截图及日志证据类型待后续阶段 |
 | REQ-TRAFFIC-001..006 | 5 | 核心实现 | `internal/recordproxy`、`internal/traffic`、`internal/blob`、`web/app/findings` | `TestRecordingProxyHTTPAndHTTPSRespectScope`、`TestEvidenceSurvivesTrafficDeletionAndRejectsTampering`；代理限 GET/HEAD |
 | REQ-EVID-001..005 | 5 | 已实现 | `internal/finding`、`internal/report`、`000006_phase5.sql` | 绑定幂等、版本冲突、证据排序、删除普通流量后读取、篡改拒绝与导出校验集成测试 |
 | REQ-PROD-009、REQ-UI-006 | 5..6 | 已实现 UI | `web/app/findings`、`internal/report`、`web/app/tasks` | 报告证据过期提示、实时任务动态和执行详情；见 phase6-plan |
 | REQ-UI-001..007、REQ-PROD-007 | 6 | 核心实现 | `web/app`、`internal/api/phase6.go`、`internal/tool/workspace.go` | 状态文本、操作确认、SSE 去重、ToolCall/图血缘、证据过期、持久队列状态；工作区与审计 RBAC 集成测试 |
-| REQ-PROD-010 | 5..7 | 部分实现 | `internal/agent/phase5_integration_test.go`、`internal/backup/verify.go`、`scripts/backup.sh`、`scripts/restore-drill.sh`、`docs/phase7-plan.md`、`.github/workflows/ci.yml` | 阶段集成测试、桌面/窄屏浏览器检查、Go vet 与 race、隔离恢复演练（Blob/凭据非空样本）已完成；六个完整 E2E 和最终发布门槛仍待完成 |
+| REQ-PROD-010 | 5..7 | 部分实现 | `internal/api/phase7_e2e_integration_test.go`、`internal/agent/phase5_integration_test.go`、`internal/backup/verify.go`、`scripts/backup.sh`、`scripts/restore-drill.sh`、`docs/phase7-plan.md`、`.github/workflows/ci.yml` | E2E-01/02/04 后端主链路、阶段集成测试、桌面/窄屏浏览器检查、Go vet 与 race、隔离恢复演练（Blob/凭据非空样本）已完成；六个完整浏览器 E2E 和最终发布门槛仍待完成 |
 
 每完成一个 Phase，本表必须扩展到该阶段触及的全部需求号，并附上测试证据。
 

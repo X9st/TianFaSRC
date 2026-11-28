@@ -1,6 +1,7 @@
 package api
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/X9st/TianFaSRC/internal/agent"
 	"github.com/X9st/TianFaSRC/internal/auth"
+	"github.com/X9st/TianFaSRC/internal/blob"
 	"github.com/X9st/TianFaSRC/internal/finding"
 	"github.com/X9st/TianFaSRC/internal/identity"
 	"github.com/X9st/TianFaSRC/internal/llm"
@@ -29,6 +32,7 @@ import (
 	"github.com/X9st/TianFaSRC/internal/system"
 	"github.com/X9st/TianFaSRC/internal/task"
 	"github.com/X9st/TianFaSRC/internal/tool"
+	"github.com/X9st/TianFaSRC/internal/traffic"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -327,4 +331,129 @@ func TestPhase7AutonomousHTTPFindingAndFailoverE2E(t *testing.T) {
 	if targetHits.Load() != 2 || toolCalls < 4 || failovers != 1 || blocked != 0 || primaryCalls.Load() != 1 || backupCalls.Load() < 8 || primaryAttempts != 1 || backupUsage < 8 {
 		t.Fatalf("target=%d tools=%d failover=%d blocked=%d primary=%d backup=%d primary_attempts=%d backup_usage=%d", targetHits.Load(), toolCalls, failovers, blocked, primaryCalls.Load(), backupCalls.Load(), primaryAttempts, backupUsage)
 	}
+
+	t.Run("evidence survives traffic deletion and is eventually collected", func(t *testing.T) {
+		listed := call(http.MethodGet, "/api/v1/traffic?task_id="+taskID, nil)
+		var trafficList struct {
+			Data []traffic.Entry `json:"data"`
+		}
+		if listed.Code != 200 || json.Unmarshal(listed.Body.Bytes(), &trafficList) != nil || len(trafficList.Data) != 2 {
+			t.Fatalf("captured traffic: %d %s", listed.Code, listed.Body.String())
+		}
+		findingID := findings[0].ID
+		bindingIDs := make([]string, 0, 2)
+		responses := make(map[string][]byte)
+		for index, exchange := range trafficList.Data {
+			original := call(http.MethodGet, "/api/v1/traffic/"+exchange.ID+"/body?part=response", nil)
+			if original.Code != 200 || !bytes.Contains(original.Body.Bytes(), []byte("controlled private-data fixture")) {
+				t.Fatalf("original response: %d %s", original.Code, original.Body.String())
+			}
+			role := "baseline"
+			if index == 1 {
+				role = "proof"
+			}
+			bound := call(http.MethodPost, "/api/v1/findings/"+findingID+"/evidence", map[string]any{"traffic_id": exchange.ID, "role": role, "note": "受控靶场原始响应"})
+			var binding struct {
+				Data struct {
+					BindingID      string  `json:"binding_id"`
+					ResponseSHA256 *string `json:"response_sha256"`
+				} `json:"data"`
+			}
+			if bound.Code != 201 || json.Unmarshal(bound.Body.Bytes(), &binding) != nil || binding.Data.BindingID == "" || binding.Data.ResponseSHA256 == nil {
+				t.Fatalf("bind %s: %d %s", role, bound.Code, bound.Body.String())
+			}
+			bindingIDs = append(bindingIDs, binding.Data.BindingID)
+			responses[binding.Data.BindingID] = bytes.Clone(original.Body.Bytes())
+		}
+		currentFinding := call(http.MethodGet, "/api/v1/findings/"+findingID, nil)
+		var findingState struct {
+			Data finding.Finding `json:"data"`
+		}
+		if currentFinding.Code != 200 || json.Unmarshal(currentFinding.Body.Bytes(), &findingState) != nil {
+			t.Fatalf("finding with evidence: %d %s", currentFinding.Code, currentFinding.Body.String())
+		}
+		confirmed := call(http.MethodPost, "/api/v1/findings/"+findingID+":confirm", map[string]any{"version": findingState.Data.Version})
+		if confirmed.Code != 200 || !bytes.Contains(confirmed.Body.Bytes(), []byte(`"status":"confirmed"`)) {
+			t.Fatalf("confirm finding: %d %s", confirmed.Code, confirmed.Body.String())
+		}
+		reportState := call(http.MethodGet, "/api/v1/tasks/"+taskID+"/report", nil)
+		var reportVersion struct {
+			Data struct {
+				Version                int64 `json:"version"`
+				CurrentEvidenceVersion int64 `json:"current_evidence_version"`
+			} `json:"data"`
+		}
+		if reportState.Code != 200 || json.Unmarshal(reportState.Body.Bytes(), &reportVersion) != nil || reportVersion.Data.CurrentEvidenceVersion == 0 {
+			t.Fatalf("report version: %d %s", reportState.Code, reportState.Body.String())
+		}
+		saved := call(http.MethodPut, "/api/v1/tasks/"+taskID+"/report", map[string]any{"body": "受控靶场证据结论", "version": reportVersion.Data.Version, "evidence_version": reportVersion.Data.CurrentEvidenceVersion})
+		if saved.Code != 200 {
+			t.Fatalf("save report: %d %s", saved.Code, saved.Body.String())
+		}
+		for _, exchange := range trafficList.Data {
+			deleted := call(http.MethodDelete, "/api/v1/traffic/"+exchange.ID, nil)
+			if deleted.Code != 204 {
+				t.Fatalf("delete ordinary traffic: %d %s", deleted.Code, deleted.Body.String())
+			}
+		}
+		empty := call(http.MethodGet, "/api/v1/traffic?task_id="+taskID, nil)
+		if empty.Code != 200 || !bytes.Contains(empty.Body.Bytes(), []byte(`"data":[]`)) {
+			t.Fatalf("ordinary traffic remains: %d %s", empty.Code, empty.Body.String())
+		}
+		blobStore := traffic.Store{Pool: pool, Blobs: blob.Store{Root: dataDir}}
+		if _, err := blobStore.Collect(ctx, time.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range bindingIDs {
+			preserved := call(http.MethodGet, "/api/v1/evidence-bindings/"+id+"/body?part=response", nil)
+			if preserved.Code != 200 || !bytes.Equal(preserved.Body.Bytes(), responses[id]) {
+				t.Fatalf("evidence %s after deletion: %d %s", id, preserved.Code, preserved.Body.String())
+			}
+		}
+		exported := call(http.MethodGet, "/api/v1/tasks/"+taskID+"/export?format=md-zip", nil)
+		if exported.Code != 200 {
+			t.Fatalf("export after deletion: %d %s", exported.Code, exported.Body.String())
+		}
+		archive, err := zip.NewReader(bytes.NewReader(exported.Body.Bytes()), int64(exported.Body.Len()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var archivedResponses int
+		for _, file := range archive.File {
+			if !strings.HasSuffix(file.Name, "/response.bin") {
+				continue
+			}
+			reader, err := file.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			contents, err := io.ReadAll(reader)
+			_ = reader.Close()
+			if err != nil || !bytes.Contains(contents, []byte("controlled private-data fixture")) {
+				t.Fatalf("archived evidence %s: %v", file.Name, err)
+			}
+			archivedResponses++
+		}
+		if archivedResponses != 2 {
+			t.Fatalf("expected two archived responses, got %d", archivedResponses)
+		}
+		responseHash := *trafficList.Data[0].ResponseSHA256
+		for _, id := range bindingIDs {
+			unbound := call(http.MethodDelete, "/api/v1/evidence-bindings/"+id, nil)
+			if unbound.Code != 204 {
+				t.Fatalf("unbind evidence: %d %s", unbound.Code, unbound.Body.String())
+			}
+		}
+		if _, err := blobStore.Collect(ctx, time.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		blobPath := filepath.Join(dataDir, "blobs", responseHash[:2], responseHash)
+		if _, err := os.Stat(blobPath); !os.IsNotExist(err) {
+			t.Fatalf("unreferenced evidence blob remains: %v", err)
+		}
+		stale := call(http.MethodGet, "/api/v1/tasks/"+taskID+"/report", nil)
+		if stale.Code != 200 || !bytes.Contains(stale.Body.Bytes(), []byte(`"stale":true`)) {
+			t.Fatalf("report did not become stale after unbinding: %d %s", stale.Code, stale.Body.String())
+		}
+	})
 }

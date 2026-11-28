@@ -426,7 +426,7 @@ func (d Dispatcher) Execute(ctx context.Context, call Call) (Outcome, error) {
 	if len(preview) > 16<<10 {
 		preview = append(append([]byte{}, preview[:8<<10]...), preview[len(preview)-(8<<10):]...)
 	}
-	encoded, _ := json.Marshal(map[string]any{"preview": string(preview), "content_type": result.ContentType, "remote_ip": result.RemoteIP, "truncated": result.Truncated, "bytes": len(result.Output)})
+	encoded, _ := json.Marshal(map[string]any{"preview": string(preview), "content_type": result.ContentType, "remote_ip": result.RemoteIP, "truncated": result.Truncated || len(result.Output) > 16<<10, "bytes": len(result.Output)})
 	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	tx, err := d.Pool.Begin(settleCtx)

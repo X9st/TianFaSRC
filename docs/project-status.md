@@ -1,6 +1,6 @@
 # 天罚：已完成能力与剩余工作
 
-> 更新于 2026-11-27；核对基线：`main` 的 `c518970`。本页按[核心规格](../全新自主安全验证平台-核心能力实现规格.md)、[需求追踪](requirements-traceability.md)和各 Phase 验收记录整理。`已实现`表示已有代码和相应测试，不等于整个产品通过最终发布验收。
+> 更新于 2026-11-28；核对基线：`main`。本页按[核心规格](../全新自主安全验证平台-核心能力实现规格.md)、[需求追踪](requirements-traceability.md)和各 Phase 验收记录整理。`已实现`表示已有代码和相应测试，不等于整个产品通过最终发布验收。
 
 ## 当前结论
 
@@ -44,12 +44,12 @@
 
 | 规格场景 | 现有证据 | 仍需补齐 |
 | --- | --- | --- |
-| E2E-01 自主闭环 | API 登录、双 Goal 建任务、Planner 并行派两个 Worker、真实本地 HTTP 观察、Fact/Finding、目标证明、任务完成 | 从浏览器创建到报告的整条链；Worker 新资产写入、串行 Todo 与完整 Traffic/Evidence 绑定在同一场景验证 |
+| E2E-01 自主闭环 | API 登录、双 Goal 建任务、Planner 并行派两个 Worker、真实本地 HTTP 观察、Fact/Finding、目标证明、任务完成；同一场景已接入 Traffic/Evidence 和报告 API | 从浏览器创建到报告的整条链；Worker 新资产写入与串行 Todo |
 | E2E-02 主备模型 | 主 Stub 402、备用接管、独立尝试/用量、Activity 有 failover | 429 场景、完整 UI 可见性及重复副作用检查串成单一场景 |
 | E2E-03 范围强制 | 网页诱导越界、越界直连及重定向阻断，范围内继续，结构化审计 | 更多工具与网络通路、浏览器审计展示的整体验收 |
-| E2E-04 证据存续 | 集成测试覆盖绑定、删普通流量后读取、篡改拒绝、报告导出、解除绑定和宽限期后回收 | baseline/proof、报告与流量清理在同一浏览器端到端场景复核 |
+| E2E-04 证据存续 | 同一后端 E2E 场景覆盖真实 HTTP 流量、baseline/proof 绑定、人工确认、报告保存、删普通流量后原字节读取与证据 ZIP 导出、解除绑定后 Blob 回收；另有篡改拒绝集成测试 | 从浏览器完成同一流程，并复核页面状态与审计 |
 | E2E-05 崩溃恢复 | Worker 子进程 Kill 后接管、数据库短断恢复、事务失败孤儿 Blob 收集、控制命令竞态 | 规格列出的 Planner、工具写回前、Outbox、Evidence Blob 四个精确 Kill 时点及重启后 Activity 核验 |
-| E2E-06 Skill/MCP | Fake MCP 发现、Skill 加载前后工具可见性、Schema 与越界参数阻断 | Browser MCP 的完整运行、断线重连与输出截断串成端到端验收 |
+| E2E-06 Skill/MCP | Fake MCP 发现、Skill 加载前后工具可见性、Schema 与越界参数阻断；连接故障后再次调用、大输出预览截断与完整读取的集成测试 | Browser MCP 的完整运行及浏览器、审计、数据一致性端到端验收 |
 
 第 17.3 节的 20 Worker 单 Lease、Blob 事务失败、主备 402、数据库短断等已有针对性测试。Planner 与人工同时创建相似方向、Finding 写入中断、流式半途断线后的工具副作用，以及 Pause/Cancel/Shutdown 三者同发仍需按规格逐项复核。现有组件测试不能替代完整场景。细节见 [Phase 7 计划](phase7-plan.md)。
 

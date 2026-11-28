@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/X9st/TianFaSRC/internal/llm"
 	"github.com/X9st/TianFaSRC/internal/mcpclient"
@@ -224,13 +225,24 @@ func TestMCPDeferredUntilSkillLoad(t *testing.T) {
 		hits.Add(1)
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: args.Text}}}, nil, nil
 	})
-	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+	var rejectMCP atomic.Bool
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rejectMCP.Load() {
+			http.Error(w, "temporary MCP disconnect", http.StatusServiceUnavailable)
+			return
+		}
+		mcpHandler.ServeHTTP(w, r)
+	}))
 	defer httpServer.Close()
 	claim, ok, err := s.ClaimWorker(ctx)
 	if err != nil || !ok {
 		t.Fatalf("claim: %v %v", ok, err)
 	}
 	if _, err := s.Engine.Pool.Exec(ctx, `UPDATE task_intents SET status='running' WHERE id=$1`, claim.IntentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Engine.Pool.Exec(ctx, `UPDATE worker_run_budgets SET max_tool_calls=12 WHERE run_id=$1`, claim.RunID); err != nil {
 		t.Fatal(err)
 	}
 	enforcer := policy.Enforcer{TestOnlyAllowPrivate: true}
@@ -293,6 +305,46 @@ func TestMCPDeferredUntilSkillLoad(t *testing.T) {
 	blocked, err = dispatcher.Execute(ctx, call)
 	if !errors.Is(err, tool.ErrToolBlocked) || blocked.Status != "blocked" || hits.Load() != 1 {
 		t.Fatalf("MCP scope block: %+v hits=%d err=%v", blocked, hits.Load(), err)
+	}
+	rejectMCP.Store(true)
+	call.Input = json.RawMessage(`{"text":"after disconnect"}`)
+	call.IdempotencyKey = "fixture-mcp-disconnect"
+	failCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	failed, err := dispatcher.Execute(failCtx, call)
+	cancel()
+	rejectMCP.Store(false)
+	if err == nil || failed.Status != "failed" || hits.Load() != 1 {
+		t.Fatalf("MCP disconnect: %+v hits=%d err=%v", failed, hits.Load(), err)
+	}
+	call.IdempotencyKey = "fixture-mcp-reconnect"
+	recovered, err := dispatcher.Execute(ctx, call)
+	if err != nil || recovered.Status != "succeeded" || hits.Load() != 2 {
+		t.Fatalf("MCP reconnect: %+v hits=%d err=%v", recovered, hits.Load(), err)
+	}
+	largeText := strings.Repeat("evidence-", 4096)
+	largeInput, err := json.Marshal(map[string]string{"text": largeText})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call.Input = largeInput
+	call.IdempotencyKey = "fixture-mcp-large-output"
+	large, err := dispatcher.Execute(ctx, call)
+	if err != nil || large.Status != "succeeded" || hits.Load() != 3 {
+		t.Fatalf("MCP large output: %+v hits=%d err=%v", large, hits.Load(), err)
+	}
+	if bytes.Contains(large.Output, []byte(largeText)) {
+		t.Fatal("large MCP output was not truncated in the tool preview")
+	}
+	var preview struct {
+		Truncated bool `json:"truncated"`
+		Bytes     int  `json:"bytes"`
+	}
+	if err := json.Unmarshal(large.Output, &preview); err != nil || !preview.Truncated || preview.Bytes <= 16<<10 {
+		t.Fatalf("large MCP output preview metadata: %+v %v", preview, err)
+	}
+	full, _, err := dispatcher.ReadOutput(ctx, orgID, large.ID)
+	if err != nil || !bytes.Contains(full, []byte(largeText)) {
+		t.Fatalf("complete MCP output unavailable: bytes=%d err=%v", len(full), err)
 	}
 }
 
