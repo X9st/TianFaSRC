@@ -950,5 +950,9 @@ func TestPhase7AutonomousHTTPFindingAndFailoverE2E(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		runPhase7MCPWorkerSequence(t, ctx, pool, scheduler, profiles, operator.OrganizationID, operator.ID, target.URL, port, browserCtx, liveBrowserURL)
+		runPhase7CrashSequence(t, ctx, pool, scheduler, operator.OrganizationID, operator.ID, dataDir, browserCtx, liveBrowserURL)
+		runPhase7ScopeBrowserSequence(t, ctx, pool, scheduler, profiles, operator.OrganizationID, operator.ID, browserCtx, liveBrowserURL)
+		runPhase7RateLimitBrowserSequence(t, ctx, pool, scheduler, profiles, operator.OrganizationID, operator.ID, target.URL, port, &targetHits, browserCtx, liveBrowserURL)
 	}
 }

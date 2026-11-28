@@ -106,6 +106,31 @@ func (d Dispatcher) AvailableForRun(ctx context.Context, orgID, runID string) ([
 	return names, rows.Err()
 }
 
+func (d Dispatcher) MCPToolSchemasForRun(ctx context.Context, orgID, runID string) (map[string]json.RawMessage, error) {
+	bindings, err := d.Bindings(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := d.Pool.Query(ctx, `SELECT ms.name,mt.name,mt.input_schema FROM mcp_tools mt JOIN mcp_servers ms ON ms.id=mt.server_id WHERE ms.organization_id=$1 AND ms.enabled AND mt.enabled AND EXISTS(SELECT 1 FROM run_loaded_skills rls JOIN skills sk ON sk.id=rls.skill_id WHERE rls.run_id=$2 AND sk.enabled AND ms.name=ANY(sk.mcps)) ORDER BY ms.name,mt.name`, orgID, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	schemas := make(map[string]json.RawMessage)
+	for rows.Next() {
+		var server, name string
+		var schema json.RawMessage
+		if err := rows.Scan(&server, &name, &schema); err != nil {
+			return nil, err
+		}
+		fullName := "mcp__" + server + "__" + name
+		if enabled, configured := bindings[fullName]; !configured || enabled {
+			schemas[fullName] = schema
+		}
+	}
+	return schemas, rows.Err()
+}
+
 func known(name string) bool {
 	for _, item := range Names() {
 		if item == name {
